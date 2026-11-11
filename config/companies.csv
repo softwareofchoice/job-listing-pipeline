@@ -1,0 +1,11 @@
+company_slug,company_name,source,active
+airbnb,Airbnb,greenhouse,true
+stripe,Stripe,greenhouse,true
+databricks,Databricks,greenhouse,true
+discord,Discord,greenhouse,true
+spotify,Spotify,lever,true
+zoox,Zoox,lever,true
+palantir,Palantir,lever,true
+ramp,Ramp,ashby,true
+notion,Notion,ashby,true
+linear,Linear,ashby,true

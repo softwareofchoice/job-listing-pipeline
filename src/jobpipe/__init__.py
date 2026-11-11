@@ -1,0 +1,1 @@
+"""Job board ingestion pipeline."""
