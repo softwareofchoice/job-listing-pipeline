@@ -1,0 +1,8 @@
+# Job titles used to DISCOVER companies (one per line, '#' = comment).
+# Each title is searched once per job-board host, so queries per page = titles x 4.
+# Titles are matched as exact phrases; seniority variants (Senior, II) are
+# filtered later in staging, not here.
+Data Engineer
+Data Platform Engineer
+Analytics Engineer
+Software Engineer, Data
