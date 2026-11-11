@@ -5,7 +5,8 @@
     python -m jobpipe.ingest --source lever     # one provider only
 
 Design choices worth knowing:
-  * Raw response bytes are stored exactly as received (no parsing/cleanup).
+  * Raw response bytes are stored exactly as received (no parsing/cleanup),
+    gzip-compressed losslessly (ADR-010).
     If our later transforms have a bug, we can re-run them from raw without
     re-fetching, and the source might not have the old data anymore.
   * One company failing never stops the others (failure isolation). Each
@@ -85,8 +86,10 @@ def fetch_one(session: requests.Session, store: LocalRawStore, company: Company,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "http_status": resp.status_code,
         "n_postings": n_postings,
-        "bytes": len(resp.content),
-        "sha256": hashlib.sha256(resp.content).hexdigest(),  # detect "nothing changed"
+        "bytes": len(resp.content),  # uncompressed size
+        # Checksum of the UNCOMPRESSED response, so it identifies the content
+        # regardless of how it's stored. Lets us detect "nothing changed".
+        "sha256": hashlib.sha256(resp.content).hexdigest(),
     }
     path = store.write(company.source, dt, company.slug, resp.content, metadata)
 

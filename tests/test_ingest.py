@@ -50,9 +50,10 @@ def test_fetch_writes_raw_bytes_unchanged_and_metadata(tmp_path):
 
     d = tmp_path / "source=greenhouse" / "dt=2026-11-11" / "company=acme"
     assert result["status"] == "ok"
-    assert (d / "response.json").read_bytes() == body  # byte-for-byte raw
+    assert store.read("greenhouse", "2026-11-11", "acme") == body  # byte-for-byte raw
     meta = json.loads((d / "_metadata.json").read_text())
     assert meta["n_postings"] == 1 and meta["run_id"] == "run1"
+    assert meta["compression"] == "gzip" and meta["bytes"] == len(body)
 
 
 def test_rerun_same_day_overwrites_not_duplicates(tmp_path):
@@ -61,9 +62,9 @@ def test_rerun_same_day_overwrites_not_duplicates(tmp_path):
     fetch_one(FakeSession(FakeResponse(200, b'[{"id":"a"}]')), store, c, "2026-11-11", "r1")
     fetch_one(FakeSession(FakeResponse(200, b'[{"id":"a"},{"id":"b"}]')), store, c, "2026-11-11", "r2")
 
-    files = sorted(p.name for p in tmp_path.rglob("*.json"))
-    assert files == ["_metadata.json", "response.json"]
-    assert json.loads((next(tmp_path.rglob("response.json"))).read_text())[1]["id"] == "b"
+    files = sorted(p.name for p in tmp_path.rglob("*") if p.is_file())
+    assert files == ["_metadata.json", "response.json.gz"]
+    assert json.loads(store.read("lever", "2026-11-11", "acme"))[1]["id"] == "b"
 
 
 def test_http_error_is_recorded_and_nothing_written(tmp_path):
@@ -71,14 +72,14 @@ def test_http_error_is_recorded_and_nothing_written(tmp_path):
     result = fetch_one(FakeSession(FakeResponse(404, b'{"ok":false}')), store,
                        Company("nope", "Nope", "lever"), "2026-11-11", "r1")
     assert result["status"] == "failed" and result["http_status"] == 404
-    assert not list(tmp_path.rglob("*.json"))
+    assert not [p for p in tmp_path.rglob("*") if p.is_file()]
 
 
 def test_non_json_response_is_rejected(tmp_path):
     result = fetch_one(FakeSession(FakeResponse(200, b"<html>maintenance</html>")),
                        LocalRawStore(tmp_path), Company("acme", "Acme", "ashby"), "2026-11-11", "r1")
     assert result["status"] == "failed"
-    assert not list(tmp_path.rglob("*.json"))
+    assert not [p for p in tmp_path.rglob("*") if p.is_file()]
 
 
 def test_load_companies_skips_inactive_and_rejects_unknown_source(tmp_path):
@@ -90,3 +91,10 @@ def test_load_companies_skips_inactive_and_rejects_unknown_source(tmp_path):
     csv.write_text("company_slug,company_name,source,active\nz,Z,workday,true\n")
     with pytest.raises(ValueError):
         load_companies(csv)
+
+
+def test_compression_is_deterministic():
+    from jobpipe.storage import compress
+    body = b'{"jobs": []}' * 100
+    assert compress(body) == compress(body)  # same input -> identical bytes
+    assert len(compress(body)) < len(body)
