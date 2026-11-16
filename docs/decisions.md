@@ -24,6 +24,10 @@ Each entry follows the same format:
 | [008](#adr-008-discovery-safeguards-validation-budget-cap-no-result-storage) | Discovery safeguards: validation, budget cap, no result storage | Accepted | 2026-11-11 |
 | [009](#adr-009-secrets-in-a-git-ignored-env-file-loaded-with-python-dotenv) | Secrets in a git-ignored `.env` file, loaded with python-dotenv | Accepted | 2026-11-11 |
 | [010](#adr-010-gzip-compress-raw-responses) | Gzip-compress raw responses | Accepted | 2026-11-11 |
+| [011](#adr-011-dbt-reads-raw-files-directly-schema-on-read) | dbt reads raw files directly (schema on read) | Accepted | 2026-11-16 |
+| [012](#adr-012-convert-description-html-to-text-in-staging-sql) | Convert description HTML to text in staging SQL | Accepted | 2026-11-16 |
+| [013](#adr-013-hand-written-scd-type-2-rebuilt-from-raw-on-every-run) | Hand-written SCD Type 2, rebuilt from raw on every run | Accepted | 2026-11-16 |
+| [014](#adr-014-a-posting-closes-when-missing-from-a-successful-fetch) | A posting closes when missing from a successful fetch | Accepted | 2026-11-16 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -378,17 +382,191 @@ with a `jobs` key, so staging reads them with different `read_json` settings.
 
 ---
 
+## ADR-011: dbt reads raw files directly (schema on read)
+
+**Status:** Accepted, 2026-11-16. Resolves open question 1.
+
+**Context.** Stage 2 needs the raw `.json.gz` files (ADR-002, ADR-010) inside
+dbt. The three providers have different shapes (Lever is a bare array;
+Greenhouse and Ashby wrap postings in `{"jobs": [...]}`) and their fields
+drift over time. Data is small: about 3.6 MB of gzip a day for 10 boards.
+
+**Decision.** Staging models read the files themselves through the
+`read_raw()` macro, which wraps DuckDB's `read_json_objects` with
+`hive_partitioning=true`. There is no separate load step and no second copy
+of the data.
+
+- **Schema on read:** `read_json_objects` returns each value as untyped JSON
+  instead of inferring a schema. Each staging model pulls out exactly the
+  fields it needs with explicit casts. A new or missing field in one file
+  can't break type inference for the rest.
+- `format='array'` for Lever (one row per posting), `'auto'` for the others
+  (one row per file, then `unnest` the `jobs` array).
+- Staging models are **views**, so they always reflect the files on disk.
+  The SCD2 model is a **table**, so the files are scanned once per build.
+- Fetch metadata (`_metadata.json`) becomes `stg_raw__fetches`, which tells
+  SCD2 which days each board was fetched successfully (ADR-014).
+- Run dbt from the repo root (`--project-dir dbt --profiles-dir dbt`) so
+  `data/raw` resolves the same way it does for the ingest job. The raw path is
+  the dbt var `raw_root`; the DuckDB file is `JOBPIPE_DUCKDB_PATH` (default
+  `data/warehouse.duckdb`). Tests override both.
+
+**Alternatives.**
+
+- *Python load step into DuckDB tables, then dbt:* the classic "EL then T"
+  pattern and faster queries, but a second copy of the data, plus its own
+  idempotency logic (delete and reinsert per day).
+- *dbt incremental model as a bronze table:* only reads new partitions, but
+  harder to reason about, and needs `--full-refresh` whenever logic changes.
+- *`read_json` with schema inference:* less SQL, but inference over hundreds
+  of files with drifting fields is fragile and can pick the wrong types.
+- *dbt `sources` with dbt-duckdb `external_location`:* gives source lineage in
+  dbt docs, but each provider needs different read options. Could be added
+  later for documentation.
+
+**Consequences.** `dbt build` alone rebuilds everything from raw. Every build
+re-reads every file, which is fine at MBs but grows with history. Revisit
+(incremental bronze, or Parquet in staging) when a build takes minutes. A
+provider with **no files at all** makes its glob fail ("No files found"), so a
+fresh setup needs at least one board per provider.
+
+---
+
+## ADR-012: Convert description HTML to text in staging SQL
+
+**Status:** Accepted, 2026-11-16
+
+**Context.** Skill and experience extraction (Stage 3) needs plain text.
+Greenhouse sends HTML that is itself HTML-escaped (`&lt;p&gt;Tom &amp;amp;
+Jerry`). Lever's `descriptionPlain` **leaves out** the `lists` array, which
+holds requirements and responsibilities, the most important text for skill
+matching. Ashby provides a usable `descriptionPlain`.
+
+**Decision.** Staging produces one `description_text` column for every
+provider, built with dbt macros in `dbt/macros/html_to_text.sql`:
+
+- `html_to_text(expr, double_escaped)`: undo the outer escaping (Greenhouse
+  only), turn block-level closing tags and `<br>` into newlines, strip tags,
+  decode common entities (`&amp;` always last), normalize whitespace.
+- `normalize_whitespace(expr)`: collapse spaces (including non-breaking),
+  collapse blank lines, trim, and turn empty strings into null.
+- Greenhouse: `html_to_text(content, double_escaped=true)`.
+- Lever: `descriptionPlain` + each list's heading and cleaned HTML content +
+  `additionalPlain`.
+- Ashby: `descriptionPlain`, falling back to cleaning `descriptionHtml`.
+
+A warn-level test flags descriptions where entities or tags survive cleaning.
+A missing description is a warning, not a failure: Lever publishes some
+postings with no text at all.
+
+**Alternatives.**
+
+- *Python HTML parser (step or DuckDB UDF):* more accurate, but staging would
+  then depend on Python code outside dbt.
+- *Keep HTML, clean in Stage 3:* thinner staging, but every consumer would
+  have to deal with HTML.
+
+**Consequences.** All text cleaning is in SQL, visible in dbt lineage, and
+tested (`tests/test_dbt_scd2.py` checks exact output for each provider).
+It's best-effort, not a full parser: rare numeric entities can survive (the
+warn test reports them; currently 0). Measured on 2026-11-16: 0 leftover
+entities or tags across 5,837 posting-days.
+
+---
+
+## ADR-013: Hand-written SCD Type 2, rebuilt from raw on every run
+
+**Status:** Accepted, 2026-11-16. Resolves open question 2.
+
+**Context.** We want to know when each posting opened, changed and closed.
+Each daily raw partition is already a **full snapshot** of every board.
+
+**Decision.** `int_postings__scd2` (a table) is built with window functions
+from all raw partitions on every run:
+
+1. Hash the tracked attributes per posting per day (`attributes_hash`).
+2. Build a timeline: one row per posting per **successful** fetch of its
+   board since the posting was first seen; the hash, or `CLOSED` if absent.
+3. `LAG` finds the days where the state changes; each change starts a version.
+4. `LEAD` gives each version its `valid_to` (exclusive) and `end_reason`
+   (`changed` or `closed`). `CLOSED` stretches are dropped: they're gaps.
+   A posting that comes back gets a new version.
+
+Tracked attributes: title, department, team, location_raw, locations_raw,
+workplace_type, employment_type, description_text. **Not** tracked:
+Greenhouse's `updated_at` (it changes without visible edits) and
+`published_at`.
+
+List columns are **sorted** before hashing. `list_distinct` doesn't keep
+order, and an order change would show up as a false "change".
+
+Tests: a structural test (no overlaps, at most one current version,
+`changed` versions are contiguous, `end_reason` null exactly when current)
+and an end-to-end pytest scenario with an edit, a failed fetch, a close, a
+reopen and an empty board.
+
+**Alternatives.**
+
+- *dbt `snapshot`:* very little code, but it's **stateful**. It only records
+  what it sees at each run, can't be rebuilt or backfilled from past raw
+  partitions, and losing the snapshot table loses the history. That breaks
+  ADR-002's "rebuild anything from raw" promise.
+- *Hand-written incremental (merge new days only):* scales better, but needs
+  careful handling of late and re-run days. The natural next step at scale.
+
+**Consequences.** History is reproducible from raw, and fixing a bug means
+re-running `dbt build`. Cost grows with postings × fetch days (the timeline
+is a cross join): about 10M rows at 28k postings over a year, which is fine
+for DuckDB. Revisit with an incremental version when builds slow down. First
+real run (Nov 11 → 16): 82 `changed` versions (genuine retitles, location
+fixes and description edits) and 109 closures.
+
+---
+
+## ADR-014: A posting closes when missing from a successful fetch
+
+**Status:** Accepted, 2026-11-16. Resolves open question 3.
+
+**Context.** The APIs only list open postings, so "closed" has to be inferred
+from absence. But a posting can also be absent because the fetch failed.
+
+**Decision.** The ingest job only writes a partition (and `_metadata.json`)
+for a successful fetch. SCD2 only considers days with a successful fetch of
+that posting's board (`stg_raw__fetches`, `http_status = 200`). A day with no
+successful fetch is **unknown** and skipped. A posting closes on the first
+day it's missing from a successful fetch of its board. A board that returns
+an empty list (`[]`) successfully closes all of its postings.
+
+**Alternatives.**
+
+- *Closed after N consecutive missing successful fetches:* also guards
+  against an API briefly returning a partial list, but reports closures
+  N−1 days late and merges real close-and-reopen events.
+- *First calendar day missing:* one failed fetch would close and then reopen
+  every posting at that board.
+
+**Consequences.** A failed fetch can never look like a mass closure. A
+*partial* successful response (an API bug) would still create false
+closures; the reconciliation test only checks staging against the fetched
+count, not against yesterday. If that happens, add an anomaly check such as
+"board lost more than 50% of postings in a day." A board that stops being
+fetched (`active=false`) keeps its postings current forever, which ties into
+open question 4 (board health).
+
+---
+
 ## Open questions
 
 Decisions still to make. Each becomes an ADR once decided.
 
-1. **How dbt reads raw data:** read the JSON files directly, or load them into
-   DuckDB tables first?
-2. **SCD Type 2:** use dbt's built-in `snapshot`, or write the logic by hand
-   in SQL?
-3. **When a posting counts as closed:** the first day it's missing, or after N
-   consecutive missing days (so a failed fetch doesn't look like every job
-   closed)?
-4. **Board health:** automatically set `active=false` after N consecutive
-   failed or empty fetches?
-5. **Profile:** which criteria are hard filters and which are scores (ADR-006)?
+1. **Board health:** automatically set `active=false` after N consecutive
+   failed or empty fetches? Should SCD2 then close that board's postings
+   (ADR-014)?
+2. **Profile:** which criteria are hard filters and which are scores (ADR-006)?
+3. **Cross-provider duplicates:** the same company on two providers, or the
+   same role posted once per city. Dedupe in a mart, or keep and group?
+4. **Compensation:** Lever's `salaryRange` and Ashby's `compensation` are
+   structured, while Greenhouse puts pay in the description text. Extract in
+   staging or in Stage 3?
+5. **Incremental SCD2:** at what build time or data size do we switch from a
+   full rebuild to merging new days (ADR-013)?

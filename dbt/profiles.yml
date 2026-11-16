@@ -1,0 +1,9 @@
+# No secrets here: DuckDB is a local file. Override the path with an env var
+# (tests point it at a temp file).
+jobpipe:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('JOBPIPE_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
+      threads: 4

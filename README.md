@@ -52,9 +52,41 @@ To add a company by hand, add a row to `config/companies.csv` with
 `discovered_via=manual`. The slug is the part of the board URL after the host,
 e.g. `jobs.lever.co/<slug>`.
 
+## Transformation (dbt + DuckDB)
+
+```
+data/raw/**/response.json.gz ─┬─ stg_greenhouse__postings ─┐
+                              ├─ stg_lever__postings ──────┼─ int_postings__daily ─┐
+                              └─ stg_ashby__postings ──────┘                       ├─ int_postings__scd2
+data/raw/**/_metadata.json ───── stg_raw__fetches ─────────────────────────────────┘
+```
+
+```bash
+.venv/bin/dbt build --project-dir dbt --profiles-dir dbt     # run models + data tests
+```
+
+Run from the repo root. Output goes to `data/warehouse.duckdb`.
+
+- **Staging** (views): one row per posting per fetch day, with the same columns
+  for every provider, read straight from the raw files (ADR-011), and
+  `description_text` cleaned from HTML (ADR-012).
+- **`int_postings__scd2`** (table): one row per *version* of a posting, with
+  `valid_from` / `valid_to` / `end_reason` (`changed` or `closed`), rebuilt
+  from raw every run (ADR-013). A posting closes when it's missing from a
+  successful fetch of its board; failed fetches are skipped (ADR-014).
+
+Example: what changed or closed recently?
+
+```sql
+select posting_key, title, valid_from, valid_to, end_reason
+from int_postings__scd2
+where end_reason is not null
+order by valid_to desc;
+```
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
-2. DuckDB + dbt: staging models that unify the 3 schemas, dedupe, SCD2 history
+2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
 3. Feature extraction: skills, years of experience, seniority
 4. Scoring against profile
 5. Airflow + Docker, then S3/Glue/Athena + Terraform

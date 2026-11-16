@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_raw__fetches
+    description: One row per successful board fetch, from the raw _metadata.json files.
+    columns:
+      - name: source
+        data_tests: [not_null, {accepted_values: {arguments: {values: [greenhouse, lever, ashby]}}}]
+      - name: company_slug
+        data_tests: [not_null]
+      - name: dt
+        data_tests: [not_null]
+      - name: n_postings
+        data_tests: [not_null]
+
+  - name: stg_greenhouse__postings
+    description: Greenhouse postings per fetch day, in the shared staging schema.
+    columns: &posting_columns
+      - name: posting_key
+        description: "source:company_slug:posting_id. Unique per posting across all providers."
+        data_tests: [not_null]
+      - name: posting_id
+        data_tests: [not_null]
+      - name: dt
+        description: Fetch date (from the raw partition), not the posting date.
+        data_tests: [not_null]
+      - name: title
+        data_tests: [not_null]
+      - name: description_text
+        description: >
+          Plain text built from the provider's HTML/text fields (ADR-012).
+          Can be null: some postings are published with no text at all.
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+      - name: posting_url
+        data_tests: [not_null]
+
+  - name: stg_lever__postings
+    description: Lever postings per fetch day. description_text includes the requirement lists.
+    columns: *posting_columns
+
+  - name: stg_ashby__postings
+    description: Ashby postings per fetch day, in the shared staging schema.
+    columns: *posting_columns

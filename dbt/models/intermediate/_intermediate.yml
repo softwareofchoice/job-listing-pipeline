@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: int_postings__daily
+    description: All providers unioned. One row per posting per successful fetch day.
+    columns:
+      - name: posting_key
+        data_tests: [not_null]
+      - name: source
+        data_tests: [{accepted_values: {arguments: {values: [greenhouse, lever, ashby]}}}]
+
+  - name: int_postings__scd2
+    description: >
+      SCD Type 2 history: one row per version of a posting. valid_to is
+      exclusive and null for the current version (ADR-013, ADR-014).
+    columns:
+      - name: posting_key
+        data_tests: [not_null]
+      - name: valid_from
+        data_tests: [not_null]
+      - name: end_reason
+        data_tests: [{accepted_values: {arguments: {values: [changed, closed]}}}]

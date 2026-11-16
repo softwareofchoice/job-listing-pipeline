@@ -4,3 +4,10 @@ __pycache__/
 data/
 .pytest_cache/
 .env
+
+# dbt build output
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+logs/
+dbt/.user.yml
