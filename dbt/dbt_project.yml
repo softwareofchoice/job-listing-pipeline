@@ -1,0 +1,21 @@
+name: jobpipe
+version: "0.1.0"
+config-version: 2
+profile: jobpipe
+
+flags:
+  send_anonymous_usage_stats: false  # no outbound telemetry
+
+# Run dbt from the REPO ROOT so relative paths (data/raw, data/warehouse.duckdb)
+# resolve the same way the Python ingest job does:
+#   .venv/bin/dbt build --project-dir dbt --profiles-dir dbt
+vars:
+  raw_root: data/raw        # ADR-011: dbt reads the raw files directly
+  max_json_bytes: 268435456 # 256 MB; DuckDB's default (16 MB) is too small for big boards
+
+models:
+  jobpipe:
+    staging:
+      +materialized: view   # cheap, always reflects the latest raw files
+    intermediate:
+      +materialized: view

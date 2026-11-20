@@ -22,4 +22,5 @@ understand each part of the system.
 .venv/bin/pytest -q
 PYTHONPATH=src .venv/bin/python -m jobpipe.ingest
 PYTHONPATH=src .venv/bin/python -m jobpipe.discover --dry-run
+.venv/bin/dbt build --project-dir dbt --profiles-dir dbt   # from repo root
 ```
