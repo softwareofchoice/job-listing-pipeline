@@ -28,11 +28,12 @@ Each entry follows the same format:
 | [012](#adr-012-convert-description-html-to-text-in-staging-sql) | Convert description HTML to text in staging SQL | Accepted | 2026-11-16 |
 | [013](#adr-013-hand-written-scd-type-2-rebuilt-from-raw-on-every-run) | Hand-written SCD Type 2, rebuilt from raw on every run | Accepted | 2026-11-16 |
 | [014](#adr-014-a-posting-closes-when-missing-from-a-successful-fetch) | A posting closes when missing from a successful fetch | Accepted | 2026-11-16 |
-| [015](#adr-015-extract-skills-with-a-regex-dictionary-in-dbt) | Extract skills with a regex dictionary in dbt | Accepted | 2026-11-19 |
+| [015](#adr-015-extract-skills-with-a-regex-dictionary-in-dbt) | Extract skills with a regex dictionary in dbt | Partly superseded by ADR-020 | 2026-11-19 |
 | [016](#adr-016-tag-mentions-by-section-required-preferred-or-unspecified) | Tag mentions by section: required, preferred, or unspecified | Accepted | 2026-11-19 |
 | [017](#adr-017-keep-every-years-of-experience-mention-summarize-as-min-and-max) | Keep every years-of-experience mention; summarize as min and max | Accepted | 2026-11-19 |
 | [018](#adr-018-seniority-from-title-keywords-then-years) | Seniority from title keywords, then years | Accepted | 2026-11-19 |
 | [019](#adr-019-audit-the-skill-dictionary-with-claude-haiku-on-a-fixed-sample) | Audit the skill dictionary with Claude Haiku on a fixed sample | Accepted | 2026-11-19 |
+| [020](#adr-020-dictionary-changes-from-the-first-llm-audit) | Dictionary changes from the first LLM audit | Accepted | 2026-11-19 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -562,8 +563,8 @@ open question 4 (board health).
 
 ## ADR-015: Extract skills with a regex dictionary in dbt
 
-**Status:** Accepted, 2026-11-19. An LLM audit of the dictionary is planned
-as a separate decision.
+**Status:** Accepted, 2026-11-19. The "skip the employer's own product" rule
+is superseded by ADR-020.
 
 **Context.** Scoring (Stage 4) needs to know which skills each posting asks
 for. Descriptions are free text, and the same skill has many spellings
@@ -783,6 +784,83 @@ daily pipeline.
 LLM*, which is a second opinion, not ground truth; the report says so and
 shows evidence for every disagreement. The audit can be re-run after seed
 changes, or on a new sample (`--seed`), to see whether things improved.
+
+---
+
+## ADR-020: Dictionary changes from the first LLM audit
+
+**Status:** Accepted, 2026-11-19. Supersedes ADR-015's rule that the
+employer's own product is never counted.
+
+**Context.** The first audit (ADR-019; `claude-haiku-5-5`, seed 42, 100
+postings, $0.055) measured the dictionary against the LLM:
+
+| Measure | Result |
+|---|---|
+| Precision vs LLM | 96% (471 agreed, 20 dictionary only) |
+| Recall vs LLM | 72% (182 LLM only, for skills in the seed) |
+| Requirement level agreement | 89% |
+
+Reading the evidence behind the disagreements:
+
+- **Real misses:** the employer's own product when it's a stated
+  requirement (18 cases: "Experience working with Databricks" at
+  Databricks), and missing spellings: "data models", "Structured
+  Streaming", "version control", "GenAI" / "RAG".
+- **LLM over-reach:** many LLM-only hits for concept skills were stretches
+  ("Data quality" from "partner with data engineers", "Streaming" from
+  "imitation learning", "REST APIs" from any "APIs"). Recall against the
+  LLM understates the dictionary for concepts.
+- **Missing skills:** a long tail of 1–2 posting tools. Nothing central to
+  data engineering was missing.
+- **Dictionary-only:** mostly correct (the LLM missed PyTorch in an ML
+  training role). Azure specialist postings list AWS and Snowflake as
+  *competitors*; left as is.
+
+**Decision.**
+
+1. **Employer's product counts only as a stated skill:** in a required or
+   preferred section *and* on a line with a usage cue (experience,
+   proficient, understanding of, knowledge of, familiar, expertise,
+   hands-on, certif, working with, skilled).
+2. **Spellings:** Data modeling + `data models?`; Streaming + `structured
+   streaming`, `kafka streams`; Git + `version control`; LLMs + `gen ?ai`,
+   `generative ai`, `rag`.
+3. **New skills:** MLflow, JAX, Kotlin, and React. React is also a verb
+   ("react to incidents"), so it requires a tech or list context.
+
+**Alternatives.**
+
+- *Count every mention of the employer's product:* tried first. Databricks
+  went from 40 to 1,055 rows, mostly the company name ("reporting to
+  Databricks' senior director", "account executive at Databricks"). It
+  would have become the most-demanded skill and marked the user down on
+  every Databricks posting.
+- *Keep skipping it:* simple, but drops real requirements and certifications.
+- *Competitor rule ("competitive platforms"):* considered and not taken;
+  it's narrow and only affected solutions-architect postings.
+- *Add the long tail of niche tools:* one posting each, not relevant to
+  the target roles.
+
+**Consequences.** Skill rows went from 10,111 to 10,855, and postings with
+at least one skill from 1,797 to 1,849 (of 2,930 current). Per skill:
+
+| Skill | Before | After |
+|---|---|---|
+| Databricks | 40 | 374 |
+| React | 0 | 127 |
+| LLMs | 296 | 399 |
+| Data modeling | 44 | 107 |
+| MLflow | 0 | 52 |
+| Kotlin | 0 | 36 |
+| Git | 139 | 153 |
+| JAX | 0 | 9 |
+| Streaming | 30 | 36 |
+
+Remaining edge case: "prior experience **at** Databricks, Snowflake…"
+counts those as skills (employer history, not tools). Re-running the audit
+(another ~$0.06) would measure the change; with responses not stored
+(ADR-019), that's the only way to re-check.
 
 ---
 

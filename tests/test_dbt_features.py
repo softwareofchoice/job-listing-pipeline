@@ -32,7 +32,7 @@ SENIOR_DE = ashby("A1", "Senior Data Engineer", "\n".join([
 
 DATABRICKS_DE = ashby("D1", "Data Engineer II", "\n".join([
     "Requirements",
-    "Experience with Databricks and Spark",        # employer's own product is skipped
+    "Experience with Databricks and Spark",        # employer's own product counts (ADR-020)
     "3-5 years of professional experience",
 ]))
 
@@ -41,6 +41,12 @@ PLATFORM = ashby("P1", "Platform Engineer", "\n".join([
     "Maintain reports covering the last 3 years of data",   # not a requirement
     "Qualifications",
     "three (3) years building backend services in Go, Rust",
+]))
+
+DATABRICKS_SALES = ashby("D2", "Account Executive", "\n".join([
+    "As an account executive at Databricks you will sell Spark solutions.",  # intro: name only
+    "Requirements",
+    "Report to the Databricks sales director",     # required section, but no usage cue
 ]))
 
 VAGUE = ashby("V1", "Analyst", "We are hiring.")
@@ -64,7 +70,7 @@ LEVER_EM = {
 
 FETCHES = {
     ("ashby", "gamma"): {1: [SENIOR_DE, PLATFORM, VAGUE]},
-    ("ashby", "databricks"): {1: [DATABRICKS_DE]},
+    ("ashby", "databricks"): {1: [DATABRICKS_DE, DATABRICKS_SALES]},
     ("greenhouse", "acme"): {1: [GREENHOUSE_STAFF]},
     ("lever", "beta"): {1: [LEVER_EM]},
 }
@@ -101,8 +107,11 @@ def test_sections_decide_requirement_level(warehouse):
     }
 
 
-def test_employer_product_is_not_a_skill(warehouse):
-    assert skills(warehouse, "ashby:databricks:D1") == {"Spark": "required"}
+def test_employer_product_counts_only_as_a_stated_skill(warehouse):
+    # "Experience with Databricks" in Requirements: a real requirement
+    assert skills(warehouse, "ashby:databricks:D1") == {"Databricks": "required", "Spark": "required"}
+    # The company name in the intro or "report to the Databricks director": not a skill
+    assert skills(warehouse, "ashby:databricks:D2") == {"Spark": "unspecified"}
 
 
 def test_html_and_lever_list_headings_become_sections(warehouse):

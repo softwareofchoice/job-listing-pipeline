@@ -94,7 +94,7 @@ seeds/skills.csv ─────────────────────
 
 One row per posting **version** in `int_posting_features`:
 
-- **Skills** from a regex dictionary, `dbt/seeds/skills.csv` (ADR-015), each
+- **Skills** from a regex dictionary, `dbt/seeds/skills.csv` (ADR-015, ADR-020), each
   tagged `required`, `preferred` or `unspecified` by the section it appears
   in (ADR-016). To track a new skill, add a row and run `dbt build`.
 - **Years of experience:** every mention is kept in `int_posting_experience`;
@@ -116,7 +116,7 @@ order by postings desc;
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
-3. ~~Feature extraction: skills, years of experience, seniority~~ (LLM audit of the skill dictionary next)
+3. ~~Feature extraction: skills, years of experience, seniority~~ (dictionary audited with an LLM: ADR-019, ADR-020)
 4. Scoring against profile
 5. Airflow + Docker, then S3/Glue/Athena + Terraform
 

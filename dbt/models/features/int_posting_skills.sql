@@ -8,8 +8,10 @@
   Skipped on purpose:
     * mentions in 'other' sections (about us, benefits, EEO): they describe
       the company, not the role
-    * the employer's own product (Databricks at Databricks): it's in every
-      posting's boilerplate
+    * the employer's own product (Databricks at Databricks), UNLESS the line
+      is in a required/preferred section and has a usage cue ("proficient
+      on the Databricks platform"). Otherwise it's just the company name:
+      "reporting to Databricks' senior director" (ADR-020)
 
   Performance: the seed's patterns are read at COMPILE time (run_query) and
   written into the SQL as constants. Joining lines to the seed and calling
@@ -23,6 +25,8 @@
     {% set skills = [] %}
 {% endif %}
 
+{% set employer_skill_cue = "experience|proficien|understanding of|knowledge of|familiar|expertise|hands[- ]on|certif|working with|skilled" %}
+
 with lines as (
     select *
     from {{ ref('int_posting_lines') }}
@@ -31,7 +35,7 @@ with lines as (
 
 mentions as (
     select
-        posting_version_key, posting_key, version_number, company_slug, line_no, section, requirement_level,
+        posting_version_key, posting_key, version_number, company_slug, line_no, line_lower, section, requirement_level,
         unnest(list_filter([
             {%- for s in skills %}
             {'skill': '{{ s[0] | replace("'", "''") }}', 'matched_text': regexp_extract(line_lower, '{{ s[1] | replace("'", "''") }}')}
@@ -58,4 +62,6 @@ select
 from mentions as m
 join {{ ref('skills') }} as s on s.skill = m.skill
 where lower(m.skill) <> m.company_slug
+   or (m.section in ('required', 'preferred')
+       and regexp_matches(m.line_lower, '{{ employer_skill_cue }}'))
 group by m.posting_version_key, m.skill

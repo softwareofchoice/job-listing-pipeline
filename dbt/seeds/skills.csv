@@ -56,16 +56,16 @@ Docker,devops,\bdocker\b|\bcontaineri[sz]
 Kubernetes,devops,\bkubernetes\b|\bk8s\b|\beks\b|\bgke\b
 Terraform,devops,\bterraform\b
 CI/CD,devops,\bci\s*/\s*cd\b|\bcontinuous (integration|deployment|delivery)\b
-Git,devops,\bgit\b|\bgithub\b|\bgitlab\b
+Git,devops,\bgit\b|\bgithub\b|\bgitlab\b|\bversion control\b
 Linux,devops,\blinux\b|\bunix\b
 Tableau,bi,\btableau\b
 Looker,bi,\blooker\b
 Power BI,bi,\bpower\s?bi\b
 Excel,bi,"\b(ms|microsoft|advanced|google sheets (and|or|/))\s*excel\b|\bexcel\s*(spreadsheets?|skills|models?|modell?ing|formulas?|vba|macros|pivot)|(,|/|\()\s*excel\b|\bexcel\s*(,|/|\))"
-Data modeling,concept,\bdata model(l)?ing\b|\bdimensional model|\bstar schema|\bkimball\b
+Data modeling,concept,\bdata model(l)?ing\b|\bdimensional model|\bstar schema|\bkimball\b|\bdata models?\b
 ETL/ELT,concept,\betl\b|\belt\b|\bdata pipelines?\b
 Data warehousing,concept,\bdata warehous|\bdata lakes?\b
-Streaming,concept,\bstream processing\b|\breal[- ]time (data|streaming|pipelines?)\b|\bstreaming (data|pipelines?)\b
+Streaming,concept,\bstream processing\b|\breal[- ]time (data|streaming|pipelines?)\b|\bstreaming (data|pipelines?)\b|\bstructured streaming\b|\bkafka streams\b
 Data quality,concept,\bdata quality\b|\bgreat expectations\b|\bdata observability\b
 Distributed systems,concept,\bdistributed (systems|computing|data)\b
 REST APIs,concept,\brest(ful)? apis?\b|\bapi (design|development)\b
@@ -74,4 +74,8 @@ Machine learning,ml,\bmachine learning\b|\bml\b
 PyTorch,ml,\bpytorch\b
 TensorFlow,ml,\btensorflow\b
 scikit-learn,ml,\bscikit|\bsklearn\b
-LLMs,ml,\bllms?\b|\blarge language models?\b
+LLMs,ml,\bllms?\b|\blarge language models?\b|\bgen ?ai\b|\bgenerative ai\b|\brag\b
+MLflow,ml,\bmlflow\b
+JAX,ml,\bjax\b
+React,language,"\breact(\.?js)?\s*(native|components?|apps?|frontend|,|/|\))|(,|/|\()\s*react\b|\breact\.js\b|\breactjs\b"
+Kotlin,language,\bkotlin\b
