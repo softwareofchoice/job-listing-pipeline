@@ -84,10 +84,39 @@ where end_reason is not null
 order by valid_to desc;
 ```
 
+## Feature extraction (dbt)
+
+```
+int_postings__scd2 ── int_posting_lines ─┬─ int_posting_skills ──────┐
+seeds/skills.csv ────────────────────────┘                           ├─ int_posting_features
+                                         └─ int_posting_experience ──┘
+```
+
+One row per posting **version** in `int_posting_features`:
+
+- **Skills** from a regex dictionary, `dbt/seeds/skills.csv` (ADR-015), each
+  tagged `required`, `preferred` or `unspecified` by the section it appears
+  in (ADR-016). To track a new skill, add a row and run `dbt build`.
+- **Years of experience:** every mention is kept in `int_posting_experience`;
+  `years_min` / `years_max` summarize them (ADR-017).
+- **Seniority** from title keywords, falling back to years (ADR-018), with
+  `seniority_source` saying which rule decided.
+
+Which skills do data-engineering postings ask for?
+
+```sql
+select skill, requirement_level, count(*) as postings
+from int_posting_skills s
+join int_posting_features f using (posting_version_key)
+where f.is_current and f.title ilike '%data engineer%'
+group by all
+order by postings desc;
+```
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
-3. Feature extraction: skills, years of experience, seniority
+3. ~~Feature extraction: skills, years of experience, seniority~~ (LLM audit of the skill dictionary next)
 4. Scoring against profile
 5. Airflow + Docker, then S3/Glue/Athena + Terraform
 

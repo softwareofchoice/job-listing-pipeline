@@ -28,6 +28,10 @@ Each entry follows the same format:
 | [012](#adr-012-convert-description-html-to-text-in-staging-sql) | Convert description HTML to text in staging SQL | Accepted | 2026-11-16 |
 | [013](#adr-013-hand-written-scd-type-2-rebuilt-from-raw-on-every-run) | Hand-written SCD Type 2, rebuilt from raw on every run | Accepted | 2026-11-16 |
 | [014](#adr-014-a-posting-closes-when-missing-from-a-successful-fetch) | A posting closes when missing from a successful fetch | Accepted | 2026-11-16 |
+| [015](#adr-015-extract-skills-with-a-regex-dictionary-in-dbt) | Extract skills with a regex dictionary in dbt | Accepted | 2026-11-19 |
+| [016](#adr-016-tag-mentions-by-section-required-preferred-or-unspecified) | Tag mentions by section: required, preferred, or unspecified | Accepted | 2026-11-19 |
+| [017](#adr-017-keep-every-years-of-experience-mention-summarize-as-min-and-max) | Keep every years-of-experience mention; summarize as min and max | Accepted | 2026-11-19 |
+| [018](#adr-018-seniority-from-title-keywords-then-years) | Seniority from title keywords, then years | Accepted | 2026-11-19 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -552,6 +556,177 @@ count, not against yesterday. If that happens, add an anomaly check such as
 "board lost more than 50% of postings in a day." A board that stops being
 fetched (`active=false`) keeps its postings current forever, which ties into
 open question 4 (board health).
+
+---
+
+## ADR-015: Extract skills with a regex dictionary in dbt
+
+**Status:** Accepted, 2026-11-19. An LLM audit of the dictionary is planned
+as a separate decision.
+
+**Context.** Scoring (Stage 4) needs to know which skills each posting asks
+for. Descriptions are free text, and the same skill has many spellings
+(Postgres / PostgreSQL, k8s / Kubernetes). Some names are ambiguous words
+(Go, R, Excel, Spark).
+
+**Decision.** A dbt seed, `dbt/seeds/skills.csv`, lists each skill with a
+category and an RE2 regex. `int_posting_skills` matches the patterns against
+every lower-cased line of the title and description, producing one row per
+(posting version, skill) with an example of the matched text.
+
+- Word boundaries (`\b`) everywhere. Ambiguous names need *list context*:
+  Go only in `golang`, `go,`, `(go`, `in go`; R only next to a comma or slash
+  or beside Python/SQL/Scala; Excel only with a tool cue
+  ("Microsoft Excel", "Excel spreadsheets").
+- Mentions in `other` sections (about us, benefits, EEO) are ignored, and so
+  is the employer's own product (Databricks at Databricks).
+- Features are computed per **posting version** (from SCD2), so each
+  description is processed once and skill history comes for free.
+- Patterns are read from the seed **at compile time** (`run_query`) and
+  inlined as constants. Joining to the seed and calling
+  `regexp_matches(line, s.pattern)` recompiled a regex for every
+  (line, skill) pair, about 12M times: 51.5s. Constants: 2.7s, with
+  identical output (0 differing rows out of 10,111).
+
+**Findings while tuning** (2026-11-19 data, checked by sampling matches):
+
+| Problem | Example | Fix |
+|---|---|---|
+| Employer boilerplate | "lakehouse" in 898 Databricks postings | removed `lakehouse`; skip employer's own skill |
+| Common word | EEO line "everyone can **excel**" in 998 postings | require a tool context |
+| Ambiguous word | "production/**go** live" | removed the `/go` form |
+
+**Alternatives.**
+
+- *LLM extraction:* handles context and finds unlisted skills, but costs
+  money per posting, isn't deterministic, needs a Python step outside dbt,
+  and is hard to test. Will be used to audit the dictionary instead.
+- *Join on `s.pattern` at runtime:* simpler SQL, but 20× slower (see above).
+
+**Consequences.** Free, deterministic, explainable (`example_match` shows why
+a skill was found), and testable. It only finds skills that are in the
+dictionary, so coverage depends on maintaining the seed. 61% of current
+postings have at least one skill; most of the rest are non-technical roles
+(sales, legal, operations). Adding a skill is one CSV row plus `dbt build`.
+
+---
+
+## ADR-016: Tag mentions by section: required, preferred, or unspecified
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Postings separate "Minimum requirements" from "Nice to have".
+Treating "Kafka is a plus" like "Kafka required" would distort scoring, and
+the company's tech blurb ("we use Snowflake") isn't a requirement at all.
+
+**Decision.** `int_posting_lines` splits each version into lines (Stage 2
+kept line breaks; line 0 is the title) and detects **headings**: lines of at
+most 5 words (or 10 ending in `:`) that match a section pattern. Every line
+after a heading belongs to that section until the next one. Sections:
+`title`, `intro` (before any heading), `required`, `preferred`,
+`responsibilities`, `other`. Patterns are checked in that order of priority,
+since "Preferred qualifications" also contains "qualification".
+
+Each line's `requirement_level`:
+
+- `preferred` if the line itself has a cue ("is a plus", "preferred",
+  "ideally"), even inside a required section
+- `required` for the title and the required section
+- `preferred` for the preferred section
+- `unspecified` otherwise (intro, responsibilities)
+
+A skill mentioned at several levels takes the strongest one.
+
+**Findings.** Generic wording first covered only 54% of Greenhouse
+postings: Databricks ("What we look for", "The impact you will have") and
+Airbnb ("Your expertise", "A typical day") use house headings. After adding
+them: **99% Greenhouse, 99% Lever, 91% Ashby** have a recognized required
+section. The end-to-end test caught a bug: the bullet "Experience with
+Airflow" under *Nice to have* was taken for a bare "Experience" heading;
+bare-word headings must now be the whole line.
+
+**Alternatives.**
+
+- *Any mention counts:* simpler, but "a plus" weighs the same as "required",
+  and company blurbs count as requirements.
+- *LLM classification of sections:* more robust wording, but the same cost
+  and testing issues as ADR-015.
+
+**Consequences.** Scoring can weigh preferred skills less. It's heuristic: a
+company with unusual headings falls back to `intro`/`unspecified`. A
+warn-level test flags any provider whose required-section coverage drops
+below 80%, which usually means a new heading style to add.
+
+---
+
+## ADR-017: Keep every years-of-experience mention; summarize as min and max
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Postings often give several figures ("5+ years overall, 3+
+with Spark", "3-5 years"), and numbers with "years" also appear in company
+trivia ("founded 20 years ago", "for over 15 years").
+
+**Decision.** `int_posting_experience` keeps **every** mention (one row each,
+with the matched text), and `int_posting_features` summarizes them as
+`years_min` (lowest lower bound) and `years_max` (highest upper bound).
+
+- Matches `3+ years`, `3-5 years`, `three (3) years`, `5 or more years`,
+  `4 yrs`. Context before/after excludes digits, so "3+ years of Python and
+  5+ years of SQL" yields two mentions.
+- Kept if: not in an `other` section; and either in a required/preferred
+  section, or the context mentions experience, or the number is followed by
+  "of/in/with/working/building…". Rejected: "ago", "founded", "of service",
+  "for over N years", "the last N years", "N years in business." Capped at 25.
+
+**Findings.** Sampling rejected lines showed that a narrow context rule
+dropped real requirements ("8+ years designing…", "for 10+ years"), so the
+section is trusted instead. The reject "in business" matched "degree in
+business administration", so it now only fires at the end of a phrase. 77%
+of current postings have a years figure; values range from 0 to 18.
+
+**Alternatives.**
+
+- *Largest number:* conservative, but sensitive to the noise above.
+- *First match:* depends on how the posting is ordered.
+
+**Consequences.** Scoring can use `years_min` (the most lenient reading), and
+any surprising value can be traced to its source text. Skill-specific
+years ("3+ years with Spark") count as overall years; tying years
+to skills could be a later refinement.
+
+---
+
+## ADR-018: Seniority from title keywords, then years
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Scoring should favor mid-level roles and penalize staff and
+principal ones. Titles are the clearest signal but often have no level
+("Data Engineer").
+
+**Decision.** Title keywords are checked from the top of the ladder down,
+and the first match wins: intern, executive (VP, head of, chief), director,
+manager, principal, staff (and "IV"), lead, senior (and "III"), mid ("II"),
+entry (junior, associate, new grad, "I"). If the title has no keyword,
+`years_min` decides: 0–2 entry, 3–5 mid, 6+ senior. `seniority_source`
+(`title`, `years`, `none`) records which rule decided.
+
+"Manager" only counts as management for people-management titles: titles
+that start with (Senior) Manager, or name a team (Engineering Manager).
+Product/Program/Account Manager are individual-contributor roles.
+
+**Alternatives.**
+
+- *Title only:* most precise, but many postings would be `unknown`.
+- *Also scan the description:* phrases like "mentor senior engineers"
+  describe the team as often as the role, so they're noisy.
+
+**Consequences.** 89% of current postings get a level (rest `unknown`).
+"Highest keyword wins" means "Senior / Staff Engineer" counts as staff,
+which is conservative for a mid-level search. "Lead" is its own level
+because it means different things at different companies; scoring decides
+how to treat it.
 
 ---
 
