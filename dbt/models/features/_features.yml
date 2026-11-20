@@ -1,0 +1,54 @@
+version: 2
+
+models:
+  - name: int_posting_lines
+    description: >
+      Title (line 0) and description lines of every posting version, tagged
+      with the section they're in and the requirement level that implies (ADR-016).
+    columns:
+      - name: section
+        data_tests:
+          - accepted_values:
+              arguments: {values: [title, intro, required, preferred, responsibilities, other]}
+      - name: requirement_level
+        data_tests:
+          - accepted_values:
+              arguments: {values: [required, preferred, unspecified]}
+
+  - name: int_posting_skills
+    description: One row per (posting version, skill), from the skills seed (ADR-015, ADR-016).
+    data_tests:
+      - unique_combination_of_columns:
+          arguments: {columns: [posting_version_key, skill]}
+    columns:
+      - name: skill
+        data_tests:
+          - relationships:
+              arguments: {to: ref('skills'), field: skill}
+      - name: requirement_level
+        data_tests:
+          - accepted_values:
+              arguments: {values: [required, preferred, unspecified]}
+
+  - name: int_posting_experience
+    description: Every "years of experience" mention, one row each (ADR-017).
+    columns:
+      - name: years_lo
+        data_tests: [not_null]
+
+  - name: int_posting_features
+    description: >
+      One row per posting version: years_min/max (ADR-017), seniority (ADR-018),
+      and skill lists by requirement level.
+    columns:
+      - name: posting_version_key
+        data_tests: [unique, not_null]
+      - name: seniority
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: [intern, entry, mid, senior, lead, staff, principal, manager, director, executive, unknown]}
+      - name: seniority_source
+        data_tests:
+          - accepted_values:
+              arguments: {values: [title, years, none]}

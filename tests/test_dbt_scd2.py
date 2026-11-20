@@ -13,22 +13,12 @@ Scenario (Greenhouse board "acme", Lever board "beta", Ashby board "gamma"):
     04    A(v2)          (B gone)  []  (L1 gone)   X
     05    A(v2), B       (B back)  <fetch failed>  X
 """
-import json
-import os
-import shutil
-import subprocess
-from datetime import date
-from pathlib import Path
-
-import duckdb
 import pytest
 
-from jobpipe.storage import LocalRawStore
+from dbt_harness import build_warehouse, requires_dbt
+from dbt_harness import day as d
 
-REPO = Path(__file__).resolve().parents[1]
-DBT = REPO / ".venv" / "bin" / "dbt"
-
-pytestmark = pytest.mark.skipif(not DBT.exists() and not shutil.which("dbt"), reason="dbt not installed")
+pytestmark = requires_dbt
 
 
 def gh_job(job_id, title):
@@ -62,32 +52,9 @@ FETCHES = {  # (source, company): {day: payload}; a missing day = failed fetch
 }
 
 
-def d(day):
-    return date(2026, 1, day)
-
-
 @pytest.fixture(scope="module")
 def warehouse(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("dbt")
-    store = LocalRawStore(tmp / "raw")
-    for (source, company), days in FETCHES.items():
-        for day, jobs in days.items():
-            body = jobs if source == "lever" else {"jobs": jobs}
-            store.write(source, d(day).isoformat(), company, json.dumps(body).encode(),
-                        {"source": source, "company_slug": company, "dt": d(day).isoformat(),
-                         "http_status": 200, "n_postings": len(jobs), "run_id": "test",
-                         "fetched_at": f"{d(day).isoformat()}T06:00:00+00:00", "sha256": "x"})
-
-    db = tmp / "test.duckdb"
-    result = subprocess.run(
-        [str(DBT) if DBT.exists() else "dbt", "build",
-         "--project-dir", "dbt", "--profiles-dir", "dbt",
-         "--target-path", str(tmp / "target"),
-         "--vars", json.dumps({"raw_root": str(tmp / "raw")})],
-        cwd=REPO, env={**os.environ, "JOBPIPE_DUCKDB_PATH": str(db), "DBT_LOG_PATH": str(tmp / "logs")},
-        capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout[-4000:]
-    con = duckdb.connect(str(db), read_only=True)
+    con = build_warehouse(tmp_path_factory.mktemp("dbt"), FETCHES)
     yield con
     con.close()
 

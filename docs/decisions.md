@@ -28,6 +28,12 @@ Each entry follows the same format:
 | [012](#adr-012-convert-description-html-to-text-in-staging-sql) | Convert description HTML to text in staging SQL | Accepted | 2026-11-16 |
 | [013](#adr-013-hand-written-scd-type-2-rebuilt-from-raw-on-every-run) | Hand-written SCD Type 2, rebuilt from raw on every run | Accepted | 2026-11-16 |
 | [014](#adr-014-a-posting-closes-when-missing-from-a-successful-fetch) | A posting closes when missing from a successful fetch | Accepted | 2026-11-16 |
+| [015](#adr-015-extract-skills-with-a-regex-dictionary-in-dbt) | Extract skills with a regex dictionary in dbt | Partly superseded by ADR-020 | 2026-11-19 |
+| [016](#adr-016-tag-mentions-by-section-required-preferred-or-unspecified) | Tag mentions by section: required, preferred, or unspecified | Accepted | 2026-11-19 |
+| [017](#adr-017-keep-every-years-of-experience-mention-summarize-as-min-and-max) | Keep every years-of-experience mention; summarize as min and max | Accepted | 2026-11-19 |
+| [018](#adr-018-seniority-from-title-keywords-then-years) | Seniority from title keywords, then years | Accepted | 2026-11-19 |
+| [019](#adr-019-audit-the-skill-dictionary-with-claude-haiku-on-a-fixed-sample) | Audit the skill dictionary with Claude Haiku on a fixed sample | Accepted | 2026-11-19 |
+| [020](#adr-020-dictionary-changes-from-the-first-llm-audit) | Dictionary changes from the first LLM audit | Accepted | 2026-11-19 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -552,6 +558,309 @@ count, not against yesterday. If that happens, add an anomaly check such as
 "board lost more than 50% of postings in a day." A board that stops being
 fetched (`active=false`) keeps its postings current forever, which ties into
 open question 4 (board health).
+
+---
+
+## ADR-015: Extract skills with a regex dictionary in dbt
+
+**Status:** Accepted, 2026-11-19. The "skip the employer's own product" rule
+is superseded by ADR-020.
+
+**Context.** Scoring (Stage 4) needs to know which skills each posting asks
+for. Descriptions are free text, and the same skill has many spellings
+(Postgres / PostgreSQL, k8s / Kubernetes). Some names are ambiguous words
+(Go, R, Excel, Spark).
+
+**Decision.** A dbt seed, `dbt/seeds/skills.csv`, lists each skill with a
+category and an RE2 regex. `int_posting_skills` matches the patterns against
+every lower-cased line of the title and description, producing one row per
+(posting version, skill) with an example of the matched text.
+
+- Word boundaries (`\b`) everywhere. Ambiguous names need *list context*:
+  Go only in `golang`, `go,`, `(go`, `in go`; R only next to a comma or slash
+  or beside Python/SQL/Scala; Excel only with a tool cue
+  ("Microsoft Excel", "Excel spreadsheets").
+- Mentions in `other` sections (about us, benefits, EEO) are ignored, and so
+  is the employer's own product (Databricks at Databricks).
+- Features are computed per **posting version** (from SCD2), so each
+  description is processed once and skill history comes for free.
+- Patterns are read from the seed **at compile time** (`run_query`) and
+  inlined as constants. Joining to the seed and calling
+  `regexp_matches(line, s.pattern)` recompiled a regex for every
+  (line, skill) pair, about 12M times: 51.5s. Constants: 2.7s, with
+  identical output (0 differing rows out of 10,111).
+
+**Findings while tuning** (2026-11-19 data, checked by sampling matches):
+
+| Problem | Example | Fix |
+|---|---|---|
+| Employer boilerplate | "lakehouse" in 898 Databricks postings | removed `lakehouse`; skip employer's own skill |
+| Common word | EEO line "everyone can **excel**" in 998 postings | require a tool context |
+| Ambiguous word | "production/**go** live" | removed the `/go` form |
+
+**Alternatives.**
+
+- *LLM extraction:* handles context and finds unlisted skills, but costs
+  money per posting, isn't deterministic, needs a Python step outside dbt,
+  and is hard to test. Will be used to audit the dictionary instead.
+- *Join on `s.pattern` at runtime:* simpler SQL, but 20× slower (see above).
+
+**Consequences.** Free, deterministic, explainable (`example_match` shows why
+a skill was found), and testable. It only finds skills that are in the
+dictionary, so coverage depends on maintaining the seed. 61% of current
+postings have at least one skill; most of the rest are non-technical roles
+(sales, legal, operations). Adding a skill is one CSV row plus `dbt build`.
+
+---
+
+## ADR-016: Tag mentions by section: required, preferred, or unspecified
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Postings separate "Minimum requirements" from "Nice to have".
+Treating "Kafka is a plus" like "Kafka required" would distort scoring, and
+the company's tech blurb ("we use Snowflake") isn't a requirement at all.
+
+**Decision.** `int_posting_lines` splits each version into lines (Stage 2
+kept line breaks; line 0 is the title) and detects **headings**: lines of at
+most 5 words (or 10 ending in `:`) that match a section pattern. Every line
+after a heading belongs to that section until the next one. Sections:
+`title`, `intro` (before any heading), `required`, `preferred`,
+`responsibilities`, `other`. Patterns are checked in that order of priority,
+since "Preferred qualifications" also contains "qualification".
+
+Each line's `requirement_level`:
+
+- `preferred` if the line itself has a cue ("is a plus", "preferred",
+  "ideally"), even inside a required section
+- `required` for the title and the required section
+- `preferred` for the preferred section
+- `unspecified` otherwise (intro, responsibilities)
+
+A skill mentioned at several levels takes the strongest one.
+
+**Findings.** Generic wording first covered only 54% of Greenhouse
+postings: Databricks ("What we look for", "The impact you will have") and
+Airbnb ("Your expertise", "A typical day") use house headings. After adding
+them: **99% Greenhouse, 99% Lever, 91% Ashby** have a recognized required
+section. The end-to-end test caught a bug: the bullet "Experience with
+Airflow" under *Nice to have* was taken for a bare "Experience" heading;
+bare-word headings must now be the whole line.
+
+**Alternatives.**
+
+- *Any mention counts:* simpler, but "a plus" weighs the same as "required",
+  and company blurbs count as requirements.
+- *LLM classification of sections:* more robust wording, but the same cost
+  and testing issues as ADR-015.
+
+**Consequences.** Scoring can weigh preferred skills less. It's heuristic: a
+company with unusual headings falls back to `intro`/`unspecified`. A
+warn-level test flags any provider whose required-section coverage drops
+below 80%, which usually means a new heading style to add.
+
+---
+
+## ADR-017: Keep every years-of-experience mention; summarize as min and max
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Postings often give several figures ("5+ years overall, 3+
+with Spark", "3-5 years"), and numbers with "years" also appear in company
+trivia ("founded 20 years ago", "for over 15 years").
+
+**Decision.** `int_posting_experience` keeps **every** mention (one row each,
+with the matched text), and `int_posting_features` summarizes them as
+`years_min` (lowest lower bound) and `years_max` (highest upper bound).
+
+- Matches `3+ years`, `3-5 years`, `three (3) years`, `5 or more years`,
+  `4 yrs`. Context before/after excludes digits, so "3+ years of Python and
+  5+ years of SQL" yields two mentions.
+- Kept if: not in an `other` section; and either in a required/preferred
+  section, or the context mentions experience, or the number is followed by
+  "of/in/with/working/building…". Rejected: "ago", "founded", "of service",
+  "for over N years", "the last N years", "N years in business." Capped at 25.
+
+**Findings.** Sampling rejected lines showed that a narrow context rule
+dropped real requirements ("8+ years designing…", "for 10+ years"), so the
+section is trusted instead. The reject "in business" matched "degree in
+business administration", so it now only fires at the end of a phrase. 77%
+of current postings have a years figure; values range from 0 to 18.
+
+**Alternatives.**
+
+- *Largest number:* conservative, but sensitive to the noise above.
+- *First match:* depends on how the posting is ordered.
+
+**Consequences.** Scoring can use `years_min` (the most lenient reading), and
+any surprising value can be traced to its source text. Skill-specific
+years ("3+ years with Spark") count as overall years; tying years
+to skills could be a later refinement.
+
+---
+
+## ADR-018: Seniority from title keywords, then years
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** Scoring should favor mid-level roles and penalize staff and
+principal ones. Titles are the clearest signal but often have no level
+("Data Engineer").
+
+**Decision.** Title keywords are checked from the top of the ladder down,
+and the first match wins: intern, executive (VP, head of, chief), director,
+manager, principal, staff (and "IV"), lead, senior (and "III"), mid ("II"),
+entry (junior, associate, new grad, "I"). If the title has no keyword,
+`years_min` decides: 0–2 entry, 3–5 mid, 6+ senior. `seniority_source`
+(`title`, `years`, `none`) records which rule decided.
+
+"Manager" only counts as management for people-management titles: titles
+that start with (Senior) Manager, or name a team (Engineering Manager).
+Product/Program/Account Manager are individual-contributor roles.
+
+**Alternatives.**
+
+- *Title only:* most precise, but many postings would be `unknown`.
+- *Also scan the description:* phrases like "mentor senior engineers"
+  describe the team as often as the role, so they're noisy.
+
+**Consequences.** 89% of current postings get a level (rest `unknown`).
+"Highest keyword wins" means "Senior / Staff Engineer" counts as staff,
+which is conservative for a mid-level search. "Lead" is its own level
+because it means different things at different companies; scoring decides
+how to treat it.
+
+---
+
+## ADR-019: Audit the skill dictionary with Claude Haiku on a fixed sample
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** The dictionary (ADR-015) only finds skills it lists, and its
+regexes can match the wrong thing. Sampling matches by hand found real
+problems (Excel, lakehouse), but only for skills we already thought to check.
+We want a measured view of what it misses, without putting an LLM in the
+daily pipeline.
+
+**Decision.** A one-off script, `python -m jobpipe.audit_skills`:
+
+- **Sample:** 100 current postings: 60 data-tech titles, 25 other
+  engineering, 15 non-tech (where false matches like Excel show up).
+  Ordered by `hash(key || seed)`, so the same seed always gives the same
+  sample.
+- **Model:** `claude-haiku-5-5`. Listing skills is plain extraction, which a
+  small model does well. $0.10 / $0.50 per million input / output tokens:
+  about $0.05 for the whole sample.
+- **Structured output:** a forced tool call (`tool_choice`) with a JSON
+  schema (`name`, `requirement_level`, `evidence`), so every answer parses.
+  The prompt lists the seed's skill names as canonical spellings, so the two
+  answers can be compared name by name.
+- **Comparison:** both found it (and do levels agree?), dictionary only
+  (possible false match), LLM only for a seed skill (possible missed match),
+  LLM only for an unlisted skill (candidate new row).
+- **Output:** a Markdown report in `data/audit/` with the evidence for every
+  disagreement. **A person edits the seed**; the LLM never changes the
+  pipeline. LLM responses aren't stored, so re-checking means another
+  (cheap) run.
+- **Spending guard:** `--estimate` counts tokens with the free
+  token-counting endpoint and prints the cost without calling the model; a
+  real run asks for confirmation unless `--yes`.
+- The key is `ANTHROPIC_API_KEY` in `.env` (ADR-009).
+
+**Alternatives.**
+
+- *LLM extraction in the pipeline:* see ADR-015.
+- *Larger or random sample:* a random 50 would be mostly sales and ops roles;
+  300 costs 3× for slightly tighter estimates.
+- *Bigger model (Sonnet, Opus):* more careful on ambiguous cases, at a
+  higher price. A second run with another model would show how much the
+  audit itself depends on the model.
+- *Store the LLM responses:* re-comparing after a seed change would be free,
+  but the user preferred keeping only the report.
+- *Let the LLM write new regexes:* faster, but the patterns still need
+  checking, and reviewing them is part of the learning.
+
+**Consequences.** The precision and recall numbers are measured *against the
+LLM*, which is a second opinion, not ground truth; the report says so and
+shows evidence for every disagreement. The audit can be re-run after seed
+changes, or on a new sample (`--seed`), to see whether things improved.
+
+---
+
+## ADR-020: Dictionary changes from the first LLM audit
+
+**Status:** Accepted, 2026-11-19. Supersedes ADR-015's rule that the
+employer's own product is never counted.
+
+**Context.** The first audit (ADR-019; `claude-haiku-5-5`, seed 42, 100
+postings, $0.055) measured the dictionary against the LLM:
+
+| Measure | Result |
+|---|---|
+| Precision vs LLM | 96% (471 agreed, 20 dictionary only) |
+| Recall vs LLM | 72% (182 LLM only, for skills in the seed) |
+| Requirement level agreement | 89% |
+
+Reading the evidence behind the disagreements:
+
+- **Real misses:** the employer's own product when it's a stated
+  requirement (18 cases: "Experience working with Databricks" at
+  Databricks), and missing spellings: "data models", "Structured
+  Streaming", "version control", "GenAI" / "RAG".
+- **LLM over-reach:** many LLM-only hits for concept skills were stretches
+  ("Data quality" from "partner with data engineers", "Streaming" from
+  "imitation learning", "REST APIs" from any "APIs"). Recall against the
+  LLM understates the dictionary for concepts.
+- **Missing skills:** a long tail of 1–2 posting tools. Nothing central to
+  data engineering was missing.
+- **Dictionary-only:** mostly correct (the LLM missed PyTorch in an ML
+  training role). Azure specialist postings list AWS and Snowflake as
+  *competitors*; left as is.
+
+**Decision.**
+
+1. **Employer's product counts only as a stated skill:** in a required or
+   preferred section *and* on a line with a usage cue (experience,
+   proficient, understanding of, knowledge of, familiar, expertise,
+   hands-on, certif, working with, skilled).
+2. **Spellings:** Data modeling + `data models?`; Streaming + `structured
+   streaming`, `kafka streams`; Git + `version control`; LLMs + `gen ?ai`,
+   `generative ai`, `rag`.
+3. **New skills:** MLflow, JAX, Kotlin, and React. React is also a verb
+   ("react to incidents"), so it requires a tech or list context.
+
+**Alternatives.**
+
+- *Count every mention of the employer's product:* tried first. Databricks
+  went from 40 to 1,055 rows, mostly the company name ("reporting to
+  Databricks' senior director", "account executive at Databricks"). It
+  would have become the most-demanded skill and marked the user down on
+  every Databricks posting.
+- *Keep skipping it:* simple, but drops real requirements and certifications.
+- *Competitor rule ("competitive platforms"):* considered and not taken;
+  it's narrow and only affected solutions-architect postings.
+- *Add the long tail of niche tools:* one posting each, not relevant to
+  the target roles.
+
+**Consequences.** Skill rows went from 10,111 to 10,855, and postings with
+at least one skill from 1,797 to 1,849 (of 2,930 current). Per skill:
+
+| Skill | Before | After |
+|---|---|---|
+| Databricks | 40 | 374 |
+| React | 0 | 127 |
+| LLMs | 296 | 399 |
+| Data modeling | 44 | 107 |
+| MLflow | 0 | 52 |
+| Kotlin | 0 | 36 |
+| Git | 139 | 153 |
+| JAX | 0 | 9 |
+| Streaming | 30 | 36 |
+
+Remaining edge case: "prior experience **at** Databricks, Snowflake…"
+counts those as skills (employer history, not tools). Re-running the audit
+(another ~$0.06) would measure the change; with responses not stored
+(ADR-019), that's the only way to re-check.
 
 ---
 

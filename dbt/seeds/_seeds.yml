@@ -1,0 +1,17 @@
+version: 2
+
+seeds:
+  - name: skills
+    description: >
+      Skill dictionary (ADR-015). `pattern` is an RE2 regex matched against
+      lower-cased description lines; use \b word boundaries and list context
+      for short or ambiguous names (Go, R). Add a row to track a new skill.
+    config:
+      column_types: {skill: varchar, category: varchar, pattern: varchar}
+    columns:
+      - name: skill
+        data_tests: [unique, not_null]
+      - name: category
+        data_tests: [not_null]
+      - name: pattern
+        data_tests: [not_null]

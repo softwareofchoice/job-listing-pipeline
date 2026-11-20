@@ -1,0 +1,81 @@
+skill,category,pattern
+Python,language,\bpython\b|\bpyspark\b
+SQL,language,\bsql\b
+Java,language,\bjava\b
+Scala,language,\bscala\b
+Go,language,"\bgolang\b|\bgo\s*(,|\)|or\b)|(,|\()\s*go\b|\bin go\b"
+Rust,language,\brust\b
+C++,language,c\+\+
+C#,language,c#|\.net\b
+JavaScript,language,\bjavascript\b|\bnode\.?js\b
+TypeScript,language,\btypescript\b
+Ruby,language,\bruby\b
+R,language,"(,|/)\s*r\s*(,|/|\)|and\b|or\b)|\br\s*(,|/)\s*(python|sql|scala)|\b(python|sql|scala)\s*(,|/|or|and)\s*r\b"
+Bash,language,\bbash\b|\bshell script
+Spark,processing,\bspark\b|\bpyspark\b
+Flink,processing,\bflink\b
+Hadoop,processing,\bhadoop\b|\bhdfs\b|\bmapreduce\b
+Hive,processing,\bhive\b
+Trino/Presto,processing,\btrino\b|\bpresto\b
+Beam,processing,apache beam|\bdataflow\b
+Pandas,processing,\bpandas\b
+Kafka,streaming,\bkafka\b
+Kinesis,streaming,\bkinesis\b
+Pub/Sub,streaming,\bpub/?sub\b
+RabbitMQ,streaming,\brabbitmq\b
+Airflow,orchestration,\bairflow\b|\bmwaa\b
+Dagster,orchestration,\bdagster\b
+Prefect,orchestration,\bprefect\b
+dbt,transformation,\bdbt\b
+Fivetran,ingestion,\bfivetran\b
+Airbyte,ingestion,\bairbyte\b
+Snowflake,warehouse,\bsnowflake\b
+BigQuery,warehouse,\bbigquery\b|\bbig query\b
+Redshift,warehouse,\bredshift\b
+Databricks,warehouse,\bdatabricks\b
+Clickhouse,warehouse,\bclickhouse\b
+Iceberg,table-format,\biceberg\b
+Delta Lake,table-format,\bdelta lake\b|\bdelta tables?\b
+Parquet,file-format,\bparquet\b
+PostgreSQL,database,\bpostgres(ql)?\b
+MySQL,database,\bmysql\b
+MongoDB,database,\bmongo(db)?\b
+Cassandra,database,\bcassandra\b
+DynamoDB,database,\bdynamo(db)?\b
+Redis,database,\bredis\b
+Elasticsearch,database,\belastic\s?search\b|\bopensearch\b
+AWS,cloud,\baws\b|amazon web services
+GCP,cloud,\bgcp\b|google cloud
+Azure,cloud,\bazure\b
+S3,cloud,\bs3\b
+AWS Glue,cloud,\baws glue\b|\bglue (catalog|jobs?|etl|crawlers?)\b
+Athena,cloud,\bathena\b
+EMR,cloud,\bemr\b
+AWS Lambda,cloud,\baws lambda\b|\blambda functions?\b
+Docker,devops,\bdocker\b|\bcontaineri[sz]
+Kubernetes,devops,\bkubernetes\b|\bk8s\b|\beks\b|\bgke\b
+Terraform,devops,\bterraform\b
+CI/CD,devops,\bci\s*/\s*cd\b|\bcontinuous (integration|deployment|delivery)\b
+Git,devops,\bgit\b|\bgithub\b|\bgitlab\b|\bversion control\b
+Linux,devops,\blinux\b|\bunix\b
+Tableau,bi,\btableau\b
+Looker,bi,\blooker\b
+Power BI,bi,\bpower\s?bi\b
+Excel,bi,"\b(ms|microsoft|advanced|google sheets (and|or|/))\s*excel\b|\bexcel\s*(spreadsheets?|skills|models?|modell?ing|formulas?|vba|macros|pivot)|(,|/|\()\s*excel\b|\bexcel\s*(,|/|\))"
+Data modeling,concept,\bdata model(l)?ing\b|\bdimensional model|\bstar schema|\bkimball\b|\bdata models?\b
+ETL/ELT,concept,\betl\b|\belt\b|\bdata pipelines?\b
+Data warehousing,concept,\bdata warehous|\bdata lakes?\b
+Streaming,concept,\bstream processing\b|\breal[- ]time (data|streaming|pipelines?)\b|\bstreaming (data|pipelines?)\b|\bstructured streaming\b|\bkafka streams\b
+Data quality,concept,\bdata quality\b|\bgreat expectations\b|\bdata observability\b
+Distributed systems,concept,\bdistributed (systems|computing|data)\b
+REST APIs,concept,\brest(ful)? apis?\b|\bapi (design|development)\b
+GraphQL,concept,\bgraphql\b
+Machine learning,ml,\bmachine learning\b|\bml\b
+PyTorch,ml,\bpytorch\b
+TensorFlow,ml,\btensorflow\b
+scikit-learn,ml,\bscikit|\bsklearn\b
+LLMs,ml,\bllms?\b|\blarge language models?\b|\bgen ?ai\b|\bgenerative ai\b|\brag\b
+MLflow,ml,\bmlflow\b
+JAX,ml,\bjax\b
+React,language,"\breact(\.?js)?\s*(native|components?|apps?|frontend|,|/|\))|(,|/|\()\s*react\b|\breact\.js\b|\breactjs\b"
+Kotlin,language,\bkotlin\b
