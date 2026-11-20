@@ -32,6 +32,7 @@ Each entry follows the same format:
 | [016](#adr-016-tag-mentions-by-section-required-preferred-or-unspecified) | Tag mentions by section: required, preferred, or unspecified | Accepted | 2026-11-19 |
 | [017](#adr-017-keep-every-years-of-experience-mention-summarize-as-min-and-max) | Keep every years-of-experience mention; summarize as min and max | Accepted | 2026-11-19 |
 | [018](#adr-018-seniority-from-title-keywords-then-years) | Seniority from title keywords, then years | Accepted | 2026-11-19 |
+| [019](#adr-019-audit-the-skill-dictionary-with-claude-haiku-on-a-fixed-sample) | Audit the skill dictionary with Claude Haiku on a fixed sample | Accepted | 2026-11-19 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -727,6 +728,61 @@ Product/Program/Account Manager are individual-contributor roles.
 which is conservative for a mid-level search. "Lead" is its own level
 because it means different things at different companies; scoring decides
 how to treat it.
+
+---
+
+## ADR-019: Audit the skill dictionary with Claude Haiku on a fixed sample
+
+**Status:** Accepted, 2026-11-19
+
+**Context.** The dictionary (ADR-015) only finds skills it lists, and its
+regexes can match the wrong thing. Sampling matches by hand found real
+problems (Excel, lakehouse), but only for skills we already thought to check.
+We want a measured view of what it misses, without putting an LLM in the
+daily pipeline.
+
+**Decision.** A one-off script, `python -m jobpipe.audit_skills`:
+
+- **Sample:** 100 current postings: 60 data-tech titles, 25 other
+  engineering, 15 non-tech (where false matches like Excel show up).
+  Ordered by `hash(key || seed)`, so the same seed always gives the same
+  sample.
+- **Model:** `claude-haiku-5-5`. Listing skills is plain extraction, which a
+  small model does well. $0.10 / $0.50 per million input / output tokens:
+  about $0.05 for the whole sample.
+- **Structured output:** a forced tool call (`tool_choice`) with a JSON
+  schema (`name`, `requirement_level`, `evidence`), so every answer parses.
+  The prompt lists the seed's skill names as canonical spellings, so the two
+  answers can be compared name by name.
+- **Comparison:** both found it (and do levels agree?), dictionary only
+  (possible false match), LLM only for a seed skill (possible missed match),
+  LLM only for an unlisted skill (candidate new row).
+- **Output:** a Markdown report in `data/audit/` with the evidence for every
+  disagreement. **A person edits the seed**; the LLM never changes the
+  pipeline. LLM responses aren't stored, so re-checking means another
+  (cheap) run.
+- **Spending guard:** `--estimate` counts tokens with the free
+  token-counting endpoint and prints the cost without calling the model; a
+  real run asks for confirmation unless `--yes`.
+- The key is `ANTHROPIC_API_KEY` in `.env` (ADR-009).
+
+**Alternatives.**
+
+- *LLM extraction in the pipeline:* see ADR-015.
+- *Larger or random sample:* a random 50 would be mostly sales and ops roles;
+  300 costs 3× for slightly tighter estimates.
+- *Bigger model (Sonnet, Opus):* more careful on ambiguous cases, at a
+  higher price. A second run with another model would show how much the
+  audit itself depends on the model.
+- *Store the LLM responses:* re-comparing after a seed change would be free,
+  but the user preferred keeping only the report.
+- *Let the LLM write new regexes:* faster, but the patterns still need
+  checking, and reviewing them is part of the learning.
+
+**Consequences.** The precision and recall numbers are measured *against the
+LLM*, which is a second opinion, not ground truth; the report says so and
+shows evidence for every disagreement. The audit can be re-run after seed
+changes, or on a new sample (`--seed`), to see whether things improved.
 
 ---
 
