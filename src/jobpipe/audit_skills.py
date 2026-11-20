@@ -347,7 +347,14 @@ def main(argv: list[str] | None = None) -> int:
     log.info("sample: %d postings %s", len(sample), dict(Counter(s["sample_group"] for s in sample)))
 
     # Token counting is free and returns the exact input size for this model.
-    input_estimate = sum(client.messages.count_tokens(**r).input_tokens for r in requests)
+    # It still needs a working account, so it doubles as a check of the key
+    # and billing before any paid call.
+    try:
+        input_estimate = sum(client.messages.count_tokens(**r).input_tokens for r in requests)
+    except anthropic.APIStatusError as e:
+        message = e.body.get("error", {}).get("message") if isinstance(e.body, dict) else None
+        log.error("Anthropic API refused the request (HTTP %s): %s", e.status_code, message or e)
+        return 2
     estimate = cost(args.model, input_estimate, EXPECTED_OUTPUT_TOKENS * len(requests))
     log.info("estimate: %d input tokens, ~%d output tokens, ~$%.3f",
              input_estimate, EXPECTED_OUTPUT_TOKENS * len(requests), estimate)
