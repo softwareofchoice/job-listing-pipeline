@@ -15,3 +15,75 @@ seeds:
         data_tests: [not_null]
       - name: pattern
         data_tests: [not_null]
+
+  # ---- Your profile (Stage 4, ADR-022 to ADR-025). Edit these to re-rank. ----
+
+  - name: profile_skills
+    description: >
+      Skills you have, with a weight (3 = core, 2 = strong, 1 = working
+      knowledge). In the skill score, a posting's skill counts with your
+      weight if you have it and weight 1 if you don't, so matching a core
+      skill moves the score the most (ADR-024).
+    config:
+      column_types: {skill: varchar, weight: double, note: varchar}
+    columns:
+      - name: skill
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments: {to: ref('skills'), field: skill}
+      - name: weight
+        data_tests: [not_null]
+
+  - name: profile_settings
+    description: One row of scoring settings (ADR-024). Weights are normalized, so they needn't sum to 100.
+    config:
+      column_types:
+        years_experience: double
+        weight_skill: double
+        weight_experience: double
+        weight_level: double
+        weight_freshness: double
+        years_penalty_per_year: double
+        freshness_half_life_days: double
+        importance_required: double
+        importance_preferred: double
+        importance_unspecified: double
+        unknown_part_score: double
+
+  - name: profile_level_fit
+    description: How well each seniority level fits you, 0 to 1 (ADR-024). Must list every level Stage 3 produces.
+    config:
+      column_types: {seniority: varchar, fit: double}
+    columns:
+      - name: seniority
+        data_tests: [unique, not_null]
+      - name: fit
+        data_tests: [not_null]
+
+  - name: profile_titles
+    description: >
+      Job-function hard filter (ADR-023). A title passes if it matches any
+      'include' pattern and no 'exclude' pattern. RE2 regex on the lower-cased title.
+    config:
+      column_types: {kind: varchar, label: varchar, pattern: varchar}
+    columns:
+      - name: kind
+        data_tests:
+          - accepted_values:
+              arguments: {values: [include, exclude]}
+
+  - name: profile_locations
+    description: >
+      Location hard filter (ADR-023). 'place': any location entry matching
+      passes (onsite, hybrid or remote). 'remote_region': a remote entry
+      passes when what's left after removing the word "remote" names only
+      this region (so "Remote (US)" passes but "Remote - California" doesn't).
+    config:
+      column_types: {kind: varchar, label: varchar, pattern: varchar}
+    columns:
+      - name: kind
+        data_tests:
+          - accepted_values:
+              arguments: {values: [place, remote_region]}

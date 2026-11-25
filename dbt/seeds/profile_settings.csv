@@ -1,0 +1,2 @@
+years_experience,weight_skill,weight_experience,weight_level,weight_freshness,years_penalty_per_year,freshness_half_life_days,importance_required,importance_preferred,importance_unspecified,unknown_part_score
+4,50,25,15,10,0.25,14,1.0,0.5,0.75,0.5

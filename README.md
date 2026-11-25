@@ -113,11 +113,37 @@ group by all
 order by postings desc;
 ```
 
+## Scoring (Stage 4)
+
+```
+int_posting_features ─┐
+int_postings__scd2 ───┼─ int_posting_scores ── mart_top_matches   (your ranked list)
+profile_* seeds ──────┘
+```
+
+Your profile is five CSVs in `dbt/seeds/` (ADR-022): skills and weights,
+settings (years of experience, score weights), level fit, title rules, and
+location rules. Edit them and re-run `dbt build`.
+
+- **Hard filters** (ADR-023): job function (title) and location (Chicago, or
+  remote within the US). Applied only in `mart_top_matches`;
+  `int_posting_scores` keeps every current posting with `passes_title` /
+  `passes_location` flags so you can see why something was filtered.
+- **Score** (ADR-024): 0–100, a weighted sum of skill match (50), experience
+  fit (25), level fit (15) and freshness (10). Unknown parts count as 0.5.
+- **Freshness** (ADR-025): halves every 14 days since the pipeline first saw
+  the posting.
+
+```sql
+select rank, score, company_slug, title, location_match, why, posting_url
+from mart_top_matches order by rank limit 20;
+```
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
 3. ~~Feature extraction: skills, years of experience, seniority~~ (dictionary audited with an LLM: ADR-019, ADR-020)
-4. Scoring against profile
+4. ~~Scoring against profile~~
 5. Airflow + Docker, then S3/Glue/Athena + Terraform
 
 Raw files are gzipped: inspect one with

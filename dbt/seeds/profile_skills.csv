@@ -1,0 +1,30 @@
+skill,weight,note
+SQL,3,core: professional
+Python,3,core: professional
+Java,3,core: professional
+Kotlin,2,professional
+TypeScript,2,professional
+Bash,2,professional
+AWS,2,professional
+Terraform,2,professional
+Docker,2,professional
+CI/CD,2,professional (Jenkins / Spinnaker / GitHub Actions)
+Git,2,professional
+PostgreSQL,2,professional
+Kafka,2,professional
+Streaming,2,professional (Kafka to Druid pipeline)
+Distributed systems,2,professional (high-traffic reverse proxy)
+REST APIs,2,professional (API gateways)
+C++,1,working knowledge
+JavaScript,1,working knowledge
+React,1,working knowledge
+Pandas,1,working knowledge
+Machine learning,1,working knowledge
+Linux,1,working knowledge
+Spark,1,working knowledge (not on resume)
+Airflow,1,working knowledge (not on resume)
+Snowflake,1,working knowledge (not on resume)
+dbt,1,project (this repo)
+Data modeling,1,project (this repo)
+ETL/ELT,1,project (this repo)
+Data quality,1,project (this repo)
