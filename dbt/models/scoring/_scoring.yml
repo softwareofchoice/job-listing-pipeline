@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: int_posting_scores
+    description: >
+      Every current posting with its four 0-1 score parts, a 0-100 score, and
+      the hard-filter flags (ADR-022 to ADR-025). Nothing is filtered out here.
+    columns:
+      - name: posting_version_key
+        data_tests: [unique, not_null]
+      - name: score
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 100}
+      - name: skill_score
+        data_tests:
+          - between: {arguments: {min_value: 0, max_value: 1}}
+      - name: experience_score
+        data_tests:
+          - between: {arguments: {min_value: 0, max_value: 1}}
+      - name: level_score
+        description: Null only if a seniority level is missing from profile_level_fit.
+        data_tests:
+          - not_null
+          - between: {arguments: {min_value: 0, max_value: 1}}
+      - name: freshness_score
+        data_tests:
+          - not_null
+          - between: {arguments: {min_value: 0, max_value: 1}}
+
+  - name: mart_top_matches
+    description: >
+      Your ranked list: current postings passing the title and location hard
+      filters (ADR-023), best score first.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]

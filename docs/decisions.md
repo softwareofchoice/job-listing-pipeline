@@ -35,6 +35,10 @@ Each entry follows the same format:
 | [019](#adr-019-audit-the-skill-dictionary-with-claude-haiku-on-a-fixed-sample) | Audit the skill dictionary with Claude Haiku on a fixed sample | Accepted | 2026-11-19 |
 | [020](#adr-020-dictionary-changes-from-the-first-llm-audit) | Dictionary changes from the first LLM audit | Accepted | 2026-11-19 |
 | [021](#adr-021-cap-duckdb-threads-and-memory-for-dbt-builds) | Cap DuckDB threads and memory for dbt builds | Accepted | 2026-11-25 |
+| [022](#adr-022-your-profile-lives-in-dbt-seeds) | Your profile lives in dbt seeds | Accepted | 2026-11-25 |
+| [023](#adr-023-hard-filters-job-function-and-location-only) | Hard filters: job function and location only | Accepted | 2026-11-25 |
+| [024](#adr-024-score-is-a-weighted-sum-of-four-0-1-parts) | Score is a weighted sum of four 0–1 parts | Accepted | 2026-11-25 |
+| [025](#adr-025-freshness-counts-from-the-day-we-first-saw-a-posting) | Freshness counts from the day we first saw a posting | Accepted | 2026-11-25 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -913,6 +917,157 @@ instead of changing code.
 
 ---
 
+## ADR-022: Your profile lives in dbt seeds
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** Scoring (Stage 4) compares every posting with a personal
+profile: skills, years of experience, preferred levels, title and location
+rules, and score weights. ADR-006 says ranking happens in the final mart.
+
+**Decision.** The profile is five dbt seeds in `dbt/seeds/`:
+
+| Seed | Contents |
+|---|---|
+| `profile_skills.csv` | Skills you have, weight 3 (core), 2 (strong) or 1 |
+| `profile_settings.csv` | One row: your years, score weights, penalties, half-life |
+| `profile_level_fit.csv` | 0–1 fit for every seniority level Stage 3 produces |
+| `profile_titles.csv` | Include/exclude regexes for the job-function filter |
+| `profile_locations.csv` | Allowed places and remote regions |
+
+Edit a CSV and run `dbt build` to re-rank. Seeds are tested like models:
+every profile skill must exist in the skill dictionary, every seniority level
+needs a fit (`level_score` is `not_null`), and `profile_settings` must be
+exactly one row with valid values. Regex patterns are read at compile time and
+written into the SQL as constants (the Stage 3 performance trick, ADR-015).
+
+**Alternatives.**
+
+- *YAML file passed as dbt vars:* easier to read, but SQL only sees it
+  through Jinja: you can't join it, and dbt can't test it.
+- *A Python scoring step:* any logic is easy, but scoring would leave dbt
+  (no lineage, no dbt tests), against ADR-006.
+
+**Consequences.** The profile is version-controlled and reviewable, and a
+profile change re-ranks without code changes. CSV quirk: a pattern containing
+a comma must be quoted (`"..., il\b"`). The profile is personal data in a
+repo; it holds only skills and preferences, never contact details.
+
+---
+
+## ADR-023: Hard filters: job function and location only
+
+**Status:** Accepted, 2026-11-25. Resolves the "Profile" open question
+together with ADR-024.
+
+**Context.** ADR-006 allows hard filters only for true "no" criteria. Of 2,923
+current postings, about 1.5% are data roles, and most are in places you can't
+work.
+
+**Decision.** Two hard filters, computed as flags in `int_posting_scores` and
+applied only in `mart_top_matches`:
+
+- **Job function** (`passes_title`): the lower-cased title matches an
+  `include` pattern (Data Engineer, Analytics Engineer, Data Platform / Infra,
+  Software Engineer with data/pipeline/streaming in the title) and no
+  `exclude` pattern (solutions/sales roles, internships, people or product
+  management).
+- **Location** (`passes_location`): each entry in `locations_raw` is checked
+  on its own. A posting passes if any entry matches an allowed **place**
+  (Chicago, Illinois, `, IL`), or is remote scoped **only** to an allowed
+  region (`Remote (US)`, `US-Remote`, `Remote in the US`, `North America`), or
+  is a bare `Remote` / `workplace_type=remote` on a posting otherwise located
+  in the US (`Remote | US`, `New York, NY`), or says **only** `Remote`.
+
+"Remote scoped only to the region" means: remove the word "remote" and filler
+words; what's left must be fully matched by a region pattern. So
+`Remote - California` and `Remote (West Coast)` fail (they usually mean you
+must live there), while `Remote (US or Canada)` fails too (`or canada` is
+left over; noted as a known gap).
+
+A posting that says only "Remote" passes and is labelled
+`Remote (region unknown)`: unclear isn't a "no".
+
+Seniority, skills and years are **not** filters; they're scored (ADR-024).
+
+**Alternatives.**
+
+- *Filter on seniority too (drop staff/director):* staff roles can still be
+  worth seeing; a low level score pushes them down instead. Management titles
+  are excluded as a *function*, not a level.
+- *No filters, score only:* nothing hidden, but 98% of the list is noise.
+- *Geocoding locations:* accurate, but an external service and much more
+  work for 10–200 boards.
+
+**Consequences.** On 2026-11-17 data: 43 titles pass, 316 locations pass,
+2 postings pass both (the 10 starter companies hire few data roles in the
+US). Checking real titles found one false exclusion ("Software Engineer, Sales
+Data & Agents" matched `sales`); the pattern now only matches sales job
+titles, and that title is a test case. Ask "why didn't X show up?" with
+`int_posting_scores` (`title_includes`, `title_excludes`, `location_match`).
+
+---
+
+## ADR-024: Score is a weighted sum of four 0–1 parts
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** The ranked list needs one number per posting that you can
+explain ("82: strong skills, slightly over on years").
+
+**Decision.** `score = 100 × Σ(weight × part) / Σ(weight)` with weights
+50 / 25 / 15 / 10:
+
+| Part | Rule |
+|---|---|
+| `skill_score` | Each skill the posting mentions has a *mass* = importance (required 1.0, preferred 0.5, unspecified 0.75) × your weight (1 if you don't have it). Score = matched mass / total mass. |
+| `experience_score` | 1.0 if `years_min` ≤ your 4 years, minus 0.25 per extra year, floor 0. |
+| `level_score` | From `profile_level_fit`: mid 1.0, senior 0.8, entry 0.7, unknown 0.6, lead 0.5, staff 0.3 … |
+| `freshness_score` | ADR-025. |
+
+A part that can't be computed (no skills or years found in the text) is null
+in its column and counts as **0.5** (`unknown_part_score`) in the total, so
+missing data neither helps nor sinks a posting. Each part is stored as its
+own column, and `why` summarizes them in one line
+(`skills 58% (missing Data modeling, …) · 5+ yrs (over by 1) · senior · first seen 0d ago`).
+
+**Alternatives.**
+
+- *Multiplicative:* one weak part sinks the score, and it's hard to tune.
+- *Tiers (A/B/C):* readable, but no ordering inside a tier beyond date.
+
+**Consequences.** Scores are easy to explain and tune by editing
+`profile_settings.csv`. A weighted sum lets a great skill match make up for a
+poor level fit, which is intended. Tests check two scores by hand-computed
+arithmetic (87.9 and 56.5), so a scoring change shows up as a test diff.
+
+---
+
+## ADR-025: Freshness counts from the day we first saw a posting
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** Provider dates mislead: companies repost and backdate, and a
+Linear posting dated 2021 was still open in 2026.
+
+**Decision.** `freshness_score = 0.5 ^ (days since first seen / 14)`. "First
+seen" is the earliest `valid_from` of the posting in the SCD2 history
+(ADR-013). "Today" is the **latest successful fetch date**, not the wall
+clock, so re-running dbt on old data reproduces the same scores.
+
+**Alternatives.**
+
+- *Provider's posted date:* meaningful from day one, but easily faked.
+- *The later of the two:* best of both, at the cost of another rule.
+
+**Consequences.** Works the same for all three providers and can't be gamed.
+Everything in the first ingest looks equally new (`first seen 0d ago`) until
+a few weeks of daily history build up, so freshness carries only 10% of the
+weight. It also means daily ingestion matters: a gap in fetching delays
+"first seen" for postings that opened during the gap.
+
+---
+
 ## Open questions
 
 Decisions still to make. Each becomes an ADR once decided.
@@ -920,11 +1075,12 @@ Decisions still to make. Each becomes an ADR once decided.
 1. **Board health:** automatically set `active=false` after N consecutive
    failed or empty fetches? Should SCD2 then close that board's postings
    (ADR-014)?
-2. **Profile:** which criteria are hard filters and which are scores (ADR-006)?
-3. **Cross-provider duplicates:** the same company on two providers, or the
+2. **Cross-provider duplicates:** the same company on two providers, or the
    same role posted once per city. Dedupe in a mart, or keep and group?
-4. **Compensation:** Lever's `salaryRange` and Ashby's `compensation` are
+3. **Compensation:** Lever's `salaryRange` and Ashby's `compensation` are
    structured, while Greenhouse puts pay in the description text. Extract in
    staging or in Stage 3?
-5. **Incremental SCD2:** at what build time or data size do we switch from a
+4. **Incremental SCD2:** at what build time or data size do we switch from a
    full rebuild to merging new days (ADR-013)?
+5. **Location gaps (ADR-023):** `Remote (US or Canada)` fails the remote-region
+   rule. Allow "or <other region>" when one alternative is allowed?

@@ -1,0 +1,8 @@
+kind,label,pattern
+include,Data Engineer,\bdata engineer
+include,Analytics Engineer,\banalytics engineer
+include,Data Platform / Infra,\bdata (platform|infrastructure)\b|\betl\b
+include,Software Engineer (data),\bsoftware engineer\b.*\b(data|pipelines?|streaming)\b|\b(data|pipelines?|streaming)\b.*\bsoftware engineer\b
+exclude,Pre-sales / solutions,"\b(solutions? (architect|engineer)|sales (engineer|representative|rep|executive|development)|account executive|customer success)\b"
+exclude,Internship,\b(intern|internship|co-?op)\b
+exclude,Management / product,"\b(product|program|project|engineering) manager\b|\bdirector\b|\bhead of\b"

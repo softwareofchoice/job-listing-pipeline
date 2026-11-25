@@ -1,0 +1,9 @@
+skill,weight,note
+SQL,3,core
+Python,3,core
+Kafka,2,
+AWS,2,
+Spark,2,
+dbt,2,
+Airflow,2,
+Snowflake,2,
