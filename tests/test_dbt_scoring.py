@@ -25,7 +25,7 @@ GOOD = ashby("GOOD", "Data Engineer", "Remote (US)", "\n".join([
     "Requirements",
     "3+ years of experience",
     "Strong SQL and Python",
-    "Experience with Terraform",
+    "Experience with Rust",  # in the dictionary, not in the profile
 ]))
 CA_ONLY = ashby("CA", "Data Engineer", "Remote - California")              # state-scoped remote
 CHICAGO = ashby("CHI", "Analytics Engineer", "Chicago, IL", workplace="Hybrid")
@@ -86,9 +86,9 @@ def test_title_filter(wh, job, passes):
 
 def test_exact_score_for_a_known_posting(wh):
     s = scores(wh)["GOOD"]
-    # skills: SQL (req, weight 3) + Python (req, 3) matched; Terraform (req, 1) missing -> 6/7
+    # skills: SQL (req, weight 3) + Python (req, 3) matched; Rust (req, 1) missing -> 6/7
     assert s["skill_score"] == pytest.approx(6 / 7)
-    assert s["missing_required_skills"] == ["Terraform"]
+    assert s["missing_required_skills"] == ["Rust"]
     assert s["experience_score"] == 1.0     # 3 years <= 4
     assert s["level_score"] == 1.0          # no title keyword, 3 years -> mid
     assert s["freshness_score"] == 0.5      # first seen day 1, as of day 15: one half-life
