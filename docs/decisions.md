@@ -40,6 +40,9 @@ Each entry follows the same format:
 | [024](#adr-024-score-is-a-weighted-sum-of-four-0-1-parts) | Score is a weighted sum of four 0–1 parts | Accepted | 2026-11-25 |
 | [025](#adr-025-freshness-counts-from-the-day-we-first-saw-a-posting) | Freshness counts from the day we first saw a posting | Accepted | 2026-11-25 |
 | [026](#adr-026-check-remote-locations-option-by-option) | Check remote locations option by option | Accepted | 2026-11-25 |
+| [027](#adr-027-lean-airflow-3-in-docker-pipeline-in-its-own-virtualenv) | Lean Airflow 3 in Docker, pipeline in its own virtualenv | Accepted | 2026-11-25 |
+| [028](#adr-028-dag-design-no-catch-up-keep-building-after-partial-failures-one-pool) | DAG design: no catch-up, keep building after partial failures, one pool | Accepted | 2026-11-25 |
+| [029](#adr-029-a-dated-report-file-per-run) | A dated report file per run | Accepted | 2026-11-25 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -1116,6 +1119,135 @@ reviewed by hand. Region-restricted remote (`Remote (West Coast)`,
 single place name would split it ("Washington, D.C." becomes two items), but
 that only affects items containing "remote", and the stripped scope still
 fails. Eight real location strings are now test cases.
+
+---
+
+## ADR-027: Lean Airflow 3 in Docker, pipeline in its own virtualenv
+
+**Status:** Accepted, 2026-11-25. First part of Stage 5 (5a: local
+scheduling; S3/Terraform and Glue/Athena follow).
+
+**Context.** The pipeline needs to run daily (ingest → dbt → report) and
+weekly (discovery) without someone typing commands. The roadmap names Airflow
+(MWAA in AWS). The development machine is WSL2 with about 7 GB of RAM, and
+Airflow and dbt-core pin conflicting versions of shared libraries.
+
+**Decision.**
+
+- **Airflow 3.3.2** (the latest patch of the previous minor; 3.4.0 was three
+  weeks old) in Docker Compose (`airflow/docker-compose.yaml`), cut down
+  from the official file: **LocalExecutor + Postgres**, with services
+  postgres, api-server, scheduler, dag-processor and a one-off init. No Redis,
+  Celery worker, Flower, triggerer or example DAGs.
+- **SimpleAuthManager with everyone as admin** (no login), and the UI port
+  bound to `127.0.0.1` only. The JWT secret has a local default, overridable
+  with `AIRFLOW_JWT_SECRET`.
+- **The pipeline gets its own virtualenv in the image** (`/opt/jobpipe/venv`,
+  from `requirements.txt`). Tasks are `BashOperator`s that call that
+  interpreter: the same commands as in CLAUDE.md. Airflow's Python never
+  imports pipeline code.
+- **The repo is bind-mounted** at `/opt/jobpipe/project`, so code, profile
+  seeds and dbt models change without rebuilding; only `requirements.txt`
+  changes need `--build`. Containers run as the host user
+  (`AIRFLOW_UID`, default 1000), so files in `data/` stay owned by you.
+- `AIRFLOW__CORE__PARALLELISM=2` and ADR-021's DuckDB limits keep memory
+  bounded.
+
+**Alternatives.**
+
+- *Official Compose (Celery, Redis, workers, Flower):* closest to the docs and
+  to a multi-machine setup, but heavy for 7 GB and more moving parts than one
+  machine needs.
+- *Dagster:* lighter, with good dbt integration (models as assets), but the
+  roadmap and most job postings name Airflow.
+- *cron + script:* works, but no dependencies, retries, UI or run history.
+- *A pipeline image with `DockerOperator`:* the cleanest isolation and close to
+  `KubernetesPodOperator`, but Airflow needs the Docker socket (effectively
+  root on the host). Worth revisiting on MWAA or Kubernetes.
+- *Install the pipeline into Airflow's Python (`PythonOperator`):* least code,
+  but dbt and Airflow dependency conflicts, and pipeline code tied to Airflow.
+
+**Consequences.** One `docker compose up` starts everything; the UI shows run
+history, task logs and retries. Airflow 3 does not reliably put the DAGs
+folder on `sys.path`, so the Compose file sets `PYTHONPATH=/opt/airflow/dags`
+for the shared `jobpipe_common.py` (excluded from parsing by `.airflowignore`).
+The DAGs were verified with Airflow 3.3.2's `DagBag` in a throwaway venv
+(`tests/test_dags.py`). Requires Docker Desktop's WSL integration. The laptop
+must be on: a local scheduler can't run while it's asleep (ADR-028).
+
+---
+
+## ADR-028: DAG design: no catch-up, keep building after partial failures, one pool
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** The two schedules (ADR-007) need concrete failure, timing and
+concurrency rules, and the laptop isn't always on.
+
+**Decision.**
+
+| DAG | Schedule (America/Chicago) | Tasks |
+|---|---|---|
+| `jobpipe_daily` | 07:00 every day | `ingest` → `dbt_build` → `report` |
+| `jobpipe_weekly_discovery` | Monday 06:00 | `discover` |
+
+- **No catch-up** (`catchup=False`, `CronTriggerTimetable`). When Airflow
+  starts after missing a slot, it runs only the **most recent** one, once.
+  Ingestion can only see today's postings, so a run "for" a past day would
+  store today's data under an old date. Missed days stay gaps, which SCD2
+  treats as unknown (ADR-014). `ingest` is never given `--dt`.
+- **`ingest` retries once** after 10 minutes (re-fetching is idempotent,
+  ADR-002). It still exits 1 if any board failed, so the task shows red.
+- **`dbt_build` runs even if `ingest` failed** (`trigger_rule=all_done`): the
+  other boards' data is worth building, and dbt rebuilds from all raw files.
+- **`report` only runs if `dbt_build` succeeded** (`all_success`): a failed
+  data test stops a report from being published from bad data (a circuit
+  breaker).
+- **One-slot pool `jobpipe`** (created by `airflow-init`) for every task, plus
+  `max_active_runs=1`. Discovery appends to `companies.csv` while ingestion
+  reads it, and DuckDB allows only one writer; the pool keeps them apart even
+  across DAGs.
+- 30-minute `execution_timeout` per task.
+
+**Alternatives.**
+
+- *Catch up dbt only:* adds runs without adding information.
+- *Stop the daily run on any ingest failure:* one bad board would block
+  everyone's fresh data.
+- *Separate schedules and hope they don't overlap:* works until discovery
+  runs long; the pool makes it a guarantee.
+
+**Consequences.** Failures are visible but contained. Discovery edits a
+version-controlled file in the working tree: review it with
+`git diff config/companies.csv`. Data written while DuckDB is open elsewhere
+(a notebook holding the warehouse open for writing) makes `dbt_build` fail;
+open it `read_only=True`.
+
+---
+
+## ADR-029: A dated report file per run
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** The daily run should leave something to look at each morning,
+without accounts, secrets or a dashboard server.
+
+**Decision.** `python -m jobpipe.report` reads the warehouse **read-only** and
+writes `data/reports/dt=<as_of>/top_matches.csv` and `top_matches.html`. The
+date is the scoring "as of" date (latest fetch, ADR-025), not the wall clock,
+so re-runs overwrite the same folder. The HTML page is self-contained (no
+scripts or external assets), adapts to light and dark mode, flags postings
+first seen that day as **new**, and escapes all job-board text. Links are
+only rendered for `http(s)` URLs.
+
+**Alternatives.**
+
+- *Email or Slack notification:* nicer each morning, but credentials and an
+  external service. Can be added as a task after `report` later.
+- *No report:* query `mart_top_matches` yourself.
+
+**Consequences.** One folder per day, so lists can be compared across days.
+Reports are git-ignored with the rest of `data/`.
 
 ---
 

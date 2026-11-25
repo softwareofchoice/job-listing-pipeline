@@ -1,0 +1,132 @@
+# Lean local Airflow for this pipeline (ADR-027). Based on the official
+# Airflow 3.3.2 docker-compose.yaml, cut down for a ~7 GB laptop:
+#
+#   official                       here
+#   CeleryExecutor + Redis +       LocalExecutor: tasks run as subprocesses
+#   worker + Flower                of the scheduler (one machine, no queue)
+#   triggerer                      dropped: only needed for deferrable
+#                                  operators, which we don't use
+#   example DAGs                   off
+#   FAB auth manager, login        SimpleAuthManager, everyone is admin; the
+#                                  UI is bound to 127.0.0.1 only
+#
+# Start (from the repo root):
+#   docker compose -f airflow/docker-compose.yaml up -d --build
+# UI: http://localhost:8080
+# Stop: docker compose -f airflow/docker-compose.yaml down
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: ..
+    dockerfile: airflow/Dockerfile
+  image: jobpipe-airflow:3.3.2
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__PARALLELISM: "2"                 # two tasks at once at most: keeps memory bounded (ADR-021)
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"   # local only, no login
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Chicago
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-dev-only-jwt-secret}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Where the repo is mounted inside the containers; the DAGs cd here.
+    JOBPIPE_HOME: /opt/jobpipe/project
+    # Lets the DAG files import their shared helper (jobpipe_common.py).
+    # Airflow 3 doesn't reliably add the DAGs folder to sys.path, so say it.
+    PYTHONPATH: /opt/airflow/dags
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ..:/opt/jobpipe/project          # code, config, dbt project, data/ (read-write)
+  # Run as your host user so files written to data/ are owned by you, not root.
+  user: "${AIRFLOW_UID:-1000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow     # metadata DB, not reachable from the host
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # One-off: create/upgrade the metadata DB and the `jobpipe` pool, then exit.
+  # The pool has ONE slot: every pipeline task uses it, so tasks that share
+  # files (companies.csv, the DuckDB warehouse) never run at the same time,
+  # even across the two DAGs (ADR-028).
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        /entrypoint airflow db migrate
+        /entrypoint airflow pools set jobpipe 1 "Serialize pipeline tasks that share files and the DuckDB warehouse"
+    restart: "no"
+
+volumes:
+  postgres-db-volume:

@@ -23,4 +23,9 @@ understand each part of the system.
 PYTHONPATH=src .venv/bin/python -m jobpipe.ingest
 PYTHONPATH=src .venv/bin/python -m jobpipe.discover --dry-run
 .venv/bin/dbt build --project-dir dbt --profiles-dir dbt   # from repo root
+PYTHONPATH=src .venv/bin/python -m jobpipe.report
+docker compose -f airflow/docker-compose.yaml up -d --build   # Airflow UI: localhost:8080
 ```
+
+Airflow is deliberately NOT installed in `.venv` (ADR-027); `tests/test_dags.py`
+is skipped there and explains how to run it.

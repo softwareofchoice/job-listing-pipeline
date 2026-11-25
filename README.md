@@ -139,12 +139,42 @@ select rank, score, company_slug, title, location_match, why, posting_url
 from mart_top_matches order by rank limit 20;
 ```
 
+## Scheduling (Stage 5a: Airflow)
+
+```
+jobpipe_daily             07:00 Chicago   ingest ──> dbt_build ──> report
+jobpipe_weekly_discovery  Mon 06:00       discover
+```
+
+Airflow 3 runs in Docker with a lean setup: LocalExecutor + Postgres (ADR-027).
+Tasks run the pipeline from its own virtualenv inside the image, in the
+bind-mounted repo, so they're the same commands you run by hand. Design:
+ADR-028. Each run writes `data/reports/dt=<date>/top_matches.{csv,html}`
+(ADR-029).
+
+Requires Docker Desktop with **WSL integration** enabled for your distro
+(Settings → Resources → WSL integration).
+
+```bash
+docker compose -f airflow/docker-compose.yaml up -d --build   # first time: builds the image
+```
+
+Open http://localhost:8080 and **unpause** the two DAGs (new DAGs start
+paused). With `catchup=False`, unpausing after 07:00 runs today's slot once.
+
+```bash
+docker compose -f airflow/docker-compose.yaml ps        # health of each service
+docker compose -f airflow/docker-compose.yaml down      # stop (keeps run history)
+```
+
+Run the report by hand: `PYTHONPATH=src .venv/bin/python -m jobpipe.report`.
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
 3. ~~Feature extraction: skills, years of experience, seniority~~ (dictionary audited with an LLM: ADR-019, ADR-020)
 4. ~~Scoring against profile~~
-5. Airflow + Docker, then S3/Glue/Athena + Terraform
+5. 5a: Airflow + Docker (built; DAGs verified, first container run pending) · 5b: S3 + Terraform · 5c: Glue + Athena
 
 Raw files are gzipped: inspect one with
 `zcat data/raw/source=lever/dt=2026-11-11/company=zoox/response.json.gz | head -c 500`.
