@@ -36,9 +36,10 @@ Each entry follows the same format:
 | [020](#adr-020-dictionary-changes-from-the-first-llm-audit) | Dictionary changes from the first LLM audit | Accepted | 2026-11-19 |
 | [021](#adr-021-cap-duckdb-threads-and-memory-for-dbt-builds) | Cap DuckDB threads and memory for dbt builds | Accepted | 2026-11-25 |
 | [022](#adr-022-your-profile-lives-in-dbt-seeds) | Your profile lives in dbt seeds | Accepted | 2026-11-25 |
-| [023](#adr-023-hard-filters-job-function-and-location-only) | Hard filters: job function and location only | Accepted | 2026-11-25 |
+| [023](#adr-023-hard-filters-job-function-and-location-only) | Hard filters: job function and location only | Remote rule amended by ADR-026 | 2026-11-25 |
 | [024](#adr-024-score-is-a-weighted-sum-of-four-0-1-parts) | Score is a weighted sum of four 0–1 parts | Accepted | 2026-11-25 |
 | [025](#adr-025-freshness-counts-from-the-day-we-first-saw-a-posting) | Freshness counts from the day we first saw a posting | Accepted | 2026-11-25 |
+| [026](#adr-026-check-remote-locations-option-by-option) | Check remote locations option by option | Accepted | 2026-11-25 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -1068,6 +1069,56 @@ weight. It also means daily ingestion matters: a gap in fetching delays
 
 ---
 
+## ADR-026: Check remote locations option by option
+
+**Status:** Accepted, 2026-11-25. Amends ADR-023's remote rule; resolves the
+"Location gaps" open question.
+
+**Context.** ADR-023 removed "remote" from a location entry and required
+everything left to name an allowed region. But one entry often lists
+**alternatives**: `Remote (US or Canada)`, `San Francisco, Seattle,
+US-Remote`, `SF, NYC, Seattle, Remote` (with a separate `US` entry). All of
+these failed, although each offers US-remote. Separately, `passes_location`
+was **NULL** (not false) for postings with no `workplace_type`, because
+`false or null` is `null` in SQL.
+
+**Decision.**
+
+1. Split each location entry into **items** on `,` `;` `/` `&` `|` and the
+   words "or" / "and", **before** removing "remote".
+2. Keep only items that contain "remote"; strip "remote" and filler words
+   (in, the, only, based) from each to get its **scope**.
+3. The entry passes the remote rule if **any** item's scope is entirely an
+   allowed region (`us`, `u.s.`, `usa`, `united states`, `north america`), or
+   if any item is a bare "Remote" and the posting is otherwise located in an
+   allowed region (as before).
+4. `passes_location` is wrapped in `coalesce(..., false)`, and both filter
+   flags have `not_null` tests.
+
+Splitting before stripping matters: `Remote (California, Washington, and
+Oregon Only)` splits into `remote (california`, `washington`, `oregon only)`.
+Only the first says remote, so its scope is `california` and it fails.
+Stripping first would leave an empty item between ", and" that looks like a
+bare "Remote".
+
+**Alternatives.**
+
+- *Only allow "X or Y":* fixes `Remote (US or Canada)` but not the city
+  lists with `US-Remote` among them.
+- *Pass any remote entry that mentions the US:* simplest, but
+  `US-West Coast (Remote)` and `US - Remote (East Coast)` are
+  region-restricted and would wrongly pass.
+
+**Consequences.** On 2026-11-17 data, location passes went from 316 to 348
+postings, with 0 NULL flags; every newly passing and still-failing entry was
+reviewed by hand. Region-restricted remote (`Remote (West Coast)`,
+`US - Remote (East Coast)`) still fails, which is intended. A comma inside a
+single place name would split it ("Washington, D.C." becomes two items), but
+that only affects items containing "remote", and the stripped scope still
+fails. Eight real location strings are now test cases.
+
+---
+
 ## Open questions
 
 Decisions still to make. Each becomes an ADR once decided.
@@ -1082,5 +1133,3 @@ Decisions still to make. Each becomes an ADR once decided.
    staging or in Stage 3?
 4. **Incremental SCD2:** at what build time or data size do we switch from a
    full rebuild to merging new days (ADR-013)?
-5. **Location gaps (ADR-023):** `Remote (US or Canada)` fails the remote-region
-   rule. Allow "or <other region>" when one alternative is allowed?

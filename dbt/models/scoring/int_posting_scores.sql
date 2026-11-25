@@ -73,18 +73,31 @@ titles as (
 ),
 
 -- One row per location entry ("Remote - California", "Chicago, IL", ...).
+--
+-- Remote rule (ADR-026): an entry often lists ALTERNATIVES
+-- ("San Francisco, Seattle, US-Remote", "Remote (US or Canada)"). Split the
+-- entry into items on , ; / & "or" "and", keep the items that say "remote",
+-- and strip "remote" and filler words from each. What's left is that item's
+-- scope: "" for a bare "Remote", "us" for "US-Remote", "california" for
+-- "Remote - California". Splitting BEFORE removing "remote" matters:
+-- "Remote (California, Washington, and Oregon Only)" gives the items
+-- "remote (california", "washington", "oregon only)", and only the first
+-- says remote, so its scope is "california" (fails), not an empty item.
 location_entries as (
     select
         posting_version_key,
         loc,
         {{ label_list(places, 'loc') }}                                       as place_labels,
-        regexp_matches(loc, '\bremote\b')                                     as is_remote,
-        -- What's left once "remote" and filler words are removed: "" for a
-        -- bare "Remote", "(us)" for "Remote (US)", "california" for
-        -- "Remote - California".
-        trim(regexp_replace(
-            regexp_replace(loc, '\b(remote|in|the|or|and|only|based)\b', ' ', 'g'),
-            '[^a-z.]+', ' ', 'g'))                                            as remote_scope
+        list_transform(
+            list_filter(string_split_regex(loc, '[,;/&|]|\bor\b|\band\b'),
+                        lambda item: regexp_matches(item, '\bremote\b')),
+            lambda item: trim(regexp_replace(
+                regexp_replace(item, '\b(remote|in|the|only|based)\b', ' ', 'g'),
+                '[^a-z.]+', ' ', 'g'))
+        )                                                                     as remote_scopes,
+        -- The whole entry is just "Remote" (nothing else in it).
+        trim(regexp_replace(loc, '\bremote\b|[^a-z]+', ' ', 'g')) = ''
+            and regexp_matches(loc, '\bremote\b')                             as entry_is_only_remote
     from current_postings, unnest(coalesce(locations_raw, [])) as t(loc_original),
          lateral (select lower(loc_original) as loc)
 ),
@@ -92,18 +105,17 @@ location_entries as (
 location_entries_scored as (
     select
         *,
-        -- The scope names only allowed regions: strip each region's pattern
-        -- and check nothing is left ("us or canada" -> "or canada" isn't empty,
-        -- but "us" alone is). Only meaningful for remote entries.
-        case when is_remote and remote_scope <> '' then
-            list_filter([
-                {%- for r in regions %}
-                case when trim(regexp_replace(regexp_replace(remote_scope, '{{ r[1] | replace("'", "''") }}', ' ', 'g'), '[^a-z]+', ' ', 'g')) = ''
-                     then '{{ r[0] }}' end{{ "," if not loop.last }}
-                {%- endfor %}
-            ], lambda x: x is not null)
-        else [] end                                                           as remote_region_labels,
-        is_remote and remote_scope = ''                                       as is_bare_remote,
+        -- Region labels for which SOME remote item's scope names only that
+        -- region: strip the region pattern, nothing may be left
+        -- ("us" passes; "us west coast" leaves "west coast" and fails).
+        list_filter([
+            {%- for r in regions %}
+            case when len(list_filter(remote_scopes, lambda sc: sc <> ''
+                    and trim(regexp_replace(regexp_replace(sc, '{{ r[1] | replace("'", "''") }}', ' ', 'g'), '[^a-z]+', ' ', 'g')) = '')) > 0
+                 then '{{ r[0] }}' end{{ "," if not loop.last }}
+            {%- endfor %}
+        ], lambda x: x is not null)                                           as remote_region_labels,
+        list_contains(remote_scopes, '')                                      as has_bare_remote_item,
         {{ label_list(regions, 'loc') }}                                      as region_mentions
     from location_entries
 ),
@@ -113,8 +125,8 @@ locations as (
         p.posting_version_key,
         list_distinct(flatten(list(e.place_labels)))                          as place_matches,
         list_distinct(flatten(list(e.remote_region_labels)))                  as remote_region_matches,
-        coalesce(bool_or(e.is_bare_remote), false)                            as has_bare_remote,
-        coalesce(bool_and(e.is_bare_remote), false)                           as only_bare_remote,
+        coalesce(bool_or(e.has_bare_remote_item), false)                      as has_bare_remote,
+        coalesce(bool_and(e.entry_is_only_remote), false)                     as only_bare_remote,
         list_distinct(flatten(list(e.region_mentions)))                       as region_mentions
     from current_postings as p
     left join location_entries_scored as e using (posting_version_key)
@@ -164,11 +176,15 @@ parts as (
         -- OR a bare "Remote" / workplace_type=remote on a posting that's
         -- otherwise located in an allowed region ("Remote | US"),
         -- OR the posting says only "Remote": unclear isn't a "no" (ADR-023).
-        len(l.place_matches) > 0
-          or len(l.remote_region_matches) > 0
-          or ((l.has_bare_remote or p.workplace_type = 'remote') and len(l.region_mentions) > 0)
-          or l.only_bare_remote
-                                                                              as passes_location,
+        -- Remote entries are checked item by item (ADR-026).
+        -- coalesce: workplace_type is often null, and `false or null` is null
+        -- in SQL. A filter flag must be true or false, never null.
+        coalesce(
+            len(l.place_matches) > 0
+              or len(l.remote_region_matches) > 0
+              or ((l.has_bare_remote or p.workplace_type = 'remote') and len(l.region_mentions) > 0)
+              or l.only_bare_remote,
+            false)                                                            as passes_location,
         case
             when len(l.place_matches) > 0 then array_to_string(l.place_matches, ', ')
             when len(l.remote_region_matches) > 0 then 'Remote (' || array_to_string(l.remote_region_matches, ', ') || ')'

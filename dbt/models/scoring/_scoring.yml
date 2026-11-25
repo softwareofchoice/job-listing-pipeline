@@ -8,6 +8,12 @@ models:
     columns:
       - name: posting_version_key
         data_tests: [unique, not_null]
+      - name: passes_title
+        description: Job-function hard filter (ADR-023). Never null.
+        data_tests: [not_null]
+      - name: passes_location
+        description: Location hard filter (ADR-023, ADR-026). Never null.
+        data_tests: [not_null]
       - name: score
         data_tests:
           - not_null

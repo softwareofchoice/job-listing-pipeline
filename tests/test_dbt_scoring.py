@@ -32,13 +32,24 @@ CHICAGO = ashby("CHI", "Analytics Engineer", "Chicago, IL", workplace="Hybrid")
 BARE = ashby("BARE", "Data Engineer", "Remote")                            # unclear -> passes
 LONDON_REMOTE = ashby("LDN", "Data Engineer", "London", secondary=["Remote"])
 US_REMOTE = ashby("USR", "Senior Software Engineer, Streaming", "US-Remote")
+# Remote entries that list alternatives (ADR-026), from real postings. No
+# workplace_type, which is how the NULL passes_location bug showed up.
+US_OR_CA = ashby("USORCA", "Data Engineer", "Remote (US or Canada)")
+CITY_LIST = ashby("CITIES", "Data Engineer", "San Francisco, Seattle, US-Remote")
+REMOTE_IN = ashby("REMIN", "Data Engineer", "Toronto Canada, San Francisco, Remote in US, Remote in Canada")
+BARE_IN_LIST = ashby("BARELIST", "Data Engineer", "SF, NYC, Seattle, Remote", secondary=["US"])
+STATES_ONLY = ashby("STATES", "Data Engineer", "Remote (California, Washington, and Oregon Only)")
+WEST_COAST = ashby("WEST", "Data Engineer", "US-San Francisco, US-West Coast (Remote)")
+EUROPE_OR = ashby("EUOR", "Data Engineer", "Poland - Remote OR Romania - Remote")
+NO_US = ashby("NOUS", "Data Engineer", "SF, NYC, Seattle, Remote", secondary=["Canada"])
 SALES = ashby("SALES", "Solutions Engineer, Data Platform", "Remote (US)")
 PM = ashby("PM", "Product Manager - Data Platform", "Chicago, IL")
 DESIGNER = ashby("DES", "Product Designer", "Chicago, IL")
 SALES_DATA = ashby("SD", "Staff Software Engineer, Sales Data & Agents", "Chicago, IL")  # engineering, not sales
 
 DAY1 = [GOOD, CA_ONLY, LONDON_REMOTE, SALES, PM, DESIGNER, SALES_DATA]
-DAY15 = DAY1 + [CHICAGO, BARE, US_REMOTE]
+DAY15 = DAY1 + [CHICAGO, BARE, US_REMOTE, US_OR_CA, CITY_LIST, REMOTE_IN, BARE_IN_LIST,
+                 STATES_ONLY, WEST_COAST, EUROPE_OR, NO_US]
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +78,15 @@ def scores(wh):
     ("BARE", "Remote (region unknown)"),
     ("CA", None),
     ("LDN", None),
+    # alternatives within one entry (ADR-026)
+    ("USORCA", "Remote (United States)"),
+    ("CITIES", "Remote (United States)"),
+    ("REMIN", "Remote (United States)"),
+    ("BARELIST", "Remote (United States)"),   # bare "Remote" item, posting is in the US
+    ("STATES", None),                          # every option is a state
+    ("WEST", None),                            # "us west coast" isn't the whole US
+    ("EUOR", None),
+    ("NOUS", None),                            # bare "Remote", but nothing says US
 ])
 def test_location_filter(wh, job, expected):
     s = scores(wh)[job]
@@ -82,6 +102,12 @@ def test_location_filter(wh, job, expected):
 ])
 def test_title_filter(wh, job, passes):
     assert scores(wh)[job]["passes_title"] is passes
+
+
+def test_filter_flags_are_never_null(wh):
+    nulls = wh.execute("select count(*) from int_posting_scores "
+                       "where passes_title is null or passes_location is null").fetchone()[0]
+    assert nulls == 0
 
 
 def test_exact_score_for_a_known_posting(wh):
@@ -113,6 +139,7 @@ def test_freshness_uses_first_seen_not_provider_date(wh):
 
 def test_mart_contains_only_passing_postings_ranked_by_score(wh):
     rows = wh.execute("select rank, posting_key, score from mart_top_matches order by rank").fetchall()
-    assert {r[1].split(":")[-1] for r in rows} == {"GOOD", "CHI", "BARE", "USR", "SD"}
-    assert [r[0] for r in rows] == [1, 2, 3, 4, 5]
+    assert {r[1].split(":")[-1] for r in rows} == {"GOOD", "CHI", "BARE", "USR", "SD",
+                                                   "USORCA", "CITIES", "REMIN", "BARELIST"}
+    assert [r[0] for r in rows] == list(range(1, 10))
     assert [r[2] for r in rows] == sorted((r[2] for r in rows), reverse=True)
