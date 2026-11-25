@@ -34,6 +34,7 @@ Each entry follows the same format:
 | [018](#adr-018-seniority-from-title-keywords-then-years) | Seniority from title keywords, then years | Accepted | 2026-11-19 |
 | [019](#adr-019-audit-the-skill-dictionary-with-claude-haiku-on-a-fixed-sample) | Audit the skill dictionary with Claude Haiku on a fixed sample | Accepted | 2026-11-19 |
 | [020](#adr-020-dictionary-changes-from-the-first-llm-audit) | Dictionary changes from the first LLM audit | Accepted | 2026-11-19 |
+| [021](#adr-021-cap-duckdb-threads-and-memory-for-dbt-builds) | Cap DuckDB threads and memory for dbt builds | Accepted | 2026-11-25 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -861,6 +862,54 @@ Remaining edge case: "prior experience **at** Databricks, Snowflake…"
 counts those as skills (employer history, not tools). Re-running the audit
 (another ~$0.06) would measure the change; with responses not stored
 (ADR-019), that's the only way to re-check.
+
+---
+
+## ADR-021: Cap DuckDB threads and memory for dbt builds
+
+**Status:** Accepted, 2026-11-25. Amends ADR-011 (the `max_json_bytes` value).
+
+**Context.** `dbt build` ran out of memory on the development laptop (WSL2:
+16 cores, about 7 GB of RAM) with only one day of raw data for 10 boards.
+DuckDB defaults to one thread per core and a memory limit of 80% of RAM. Each
+thread reading JSON reserves a buffer of about 2 × `maximum_object_size`, so
+ADR-011's 256 MB setting needs about 16 × 2 × 256 MB ≈ 8 GB before any data
+is processed. Memory use depends on core count, not data size.
+
+**Decision.**
+
+- `max_json_bytes` lowered from 256 MB to **64 MB**. The largest response
+  seen so far is about 14 MB uncompressed (Databricks is 9.7 MB), so this
+  leaves about 4.5× headroom.
+- DuckDB `threads` defaults to **4** and `memory_limit` to **3GB**, set in
+  `dbt/profiles.yml` and overridable with `JOBPIPE_DUCKDB_THREADS` and
+  `JOBPIPE_DUCKDB_MEMORY` (documented in `.env.example`; not secrets).
+- dbt's own `threads` (models built in parallel) is lowered from 4 to **2**,
+  since each concurrent model runs its own DuckDB query.
+
+**Measured** (2026-11-25, same data, same machine):
+
+| Settings | Result |
+|---|---|
+| ADR-011 defaults (256 MB, no DuckDB limits) | Out of Memory: 7.1 GiB used of 5.8 GiB |
+| This ADR | 61 nodes pass (1 expected warning), 21 s, 1.1 GB peak |
+
+**Alternatives.**
+
+- *Only set `memory_limit`:* DuckDB would still reserve buffers per thread,
+  so it fails at the limit instead of at the OS.
+- *Only lower `max_json_bytes`:* helps, but a laptop with more cores would hit
+  the same wall again. Capping threads makes memory use predictable.
+- *Give WSL more memory (`.wslconfig`):* treats the symptom, works on one
+  machine only, and leaves the pipeline fragile on small CI runners or
+  containers.
+
+**Consequences.** Builds use a predictable, bounded amount of memory on any
+machine, at the cost of some parallelism (unnoticeable at this data size).
+A single board response larger than 64 MB fails with a clear DuckDB error
+("maximum_object_size"); raise `max_json_bytes` if that happens. On a larger
+machine or in Airflow/Docker (Stage 5), set the two environment variables
+instead of changing code.
 
 ---
 

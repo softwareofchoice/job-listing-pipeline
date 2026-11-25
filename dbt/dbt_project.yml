@@ -11,7 +11,7 @@ flags:
 #   .venv/bin/dbt build --project-dir dbt --profiles-dir dbt
 vars:
   raw_root: data/raw        # ADR-011: dbt reads the raw files directly
-  max_json_bytes: 268435456 # 256 MB; DuckDB's default (16 MB) is too small for big boards
+  max_json_bytes: 67108864  # 64 MB; DuckDB default (16 MB) is too small for big boards (largest seen: ~14 MB). See ADR-021
 
 models:
   jobpipe:
