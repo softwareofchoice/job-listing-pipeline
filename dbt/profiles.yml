@@ -6,4 +6,10 @@ jobpipe:
     dev:
       type: duckdb
       path: "{{ env_var('JOBPIPE_DUCKDB_PATH', 'data/warehouse.duckdb') }}"
-      threads: 4
+      threads: 2   # dbt models built at the same time
+      settings:
+        # DuckDB defaults to one thread per core and 80% of RAM. Each thread
+        # reading JSON reserves a buffer of 2 x max_json_bytes, so on a
+        # many-core laptop that can exceed memory even for tiny files (ADR-021).
+        threads: "{{ env_var('JOBPIPE_DUCKDB_THREADS', '4') }}"
+        memory_limit: "{{ env_var('JOBPIPE_DUCKDB_MEMORY', '3GB') }}"
