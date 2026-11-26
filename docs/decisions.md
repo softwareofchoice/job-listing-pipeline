@@ -43,6 +43,10 @@ Each entry follows the same format:
 | [027](#adr-027-lean-airflow-3-in-docker-pipeline-in-its-own-virtualenv) | Lean Airflow 3 in Docker, pipeline in its own virtualenv | Accepted | 2026-11-25 |
 | [028](#adr-028-dag-design-no-catch-up-keep-building-after-partial-failures-one-pool) | DAG design: no catch-up, keep building after partial failures, one pool | Accepted | 2026-11-25 |
 | [029](#adr-029-a-dated-report-file-per-run) | A dated report file per run | Accepted | 2026-11-25 |
+| [030](#adr-030-copy-the-raw-layer-to-s3-in-a-separate-upload-task) | Copy the raw layer to S3 in a separate upload task | Accepted | 2026-11-25 |
+| [031](#adr-031-dbt-reads-local-raw-files-by-default-s3-by-switch) | dbt reads local raw files by default, S3 by switch | Accepted | 2026-11-25 |
+| [032](#adr-032-the-pipeline-has-its-own-least-privilege-iam-user) | The pipeline has its own least-privilege IAM user | Accepted | 2026-11-25 |
+| [033](#adr-033-terraform-state-in-s3-created-by-a-bootstrap-stack) | Terraform state in S3, created by a bootstrap stack | Accepted | 2026-11-25 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -1248,6 +1252,156 @@ only rendered for `http(s)` URLs.
 
 **Consequences.** One folder per day, so lists can be compared across days.
 Reports are git-ignored with the rest of `data/`.
+
+---
+
+## ADR-030: Copy the raw layer to S3 in a separate upload task
+
+**Status:** Accepted, 2026-11-25. First part of Stage 5b.
+
+**Context.** The roadmap moves the raw layer to S3, so Glue and Athena can
+query it (Stage 5c) and it survives the laptop. ADR-003 laid out local folders
+exactly like S3 partitions so this move would only change the location.
+Ingestion already works, writes atomically and is tested against local files.
+
+**Decision.** Ingest stays unchanged and writes to `data/raw/`. A new module,
+`python -m jobpipe.upload`, mirrors every raw file to
+`s3://<bucket>/raw/<same relative path>`:
+
+- **Only new or changed files.** One `ListObjectsV2` of the prefix gives each
+  object's ETag. With single-part `put_object` and SSE-S3 the ETag is the MD5
+  of the bytes, so comparing it with the local file's MD5 needs no downloads.
+  A second run uploads nothing.
+- **Integrity:** each PUT sends `Content-MD5`; S3 rejects a corrupted body.
+- **Never deletes** in S3, so a local cleanup can't erase the lake.
+- `Content-Type: application/gzip`, deliberately *not*
+  `Content-Encoding: gzip`, which makes some clients unzip on download.
+- **Exit 99 when `JOBPIPE_S3_BUCKET` isn't set**, which Airflow's
+  BashOperator treats as *skipped*, so the DAG works before AWS is set up.
+- In `jobpipe_daily`, `upload_raw` is a **side branch after ingest**
+  (`ingest >> upload_raw`, `ingest >> dbt_build >> report`), with
+  `trigger_rule=all_done` like dbt_build and one retry. dbt reads the local
+  files (ADR-031), so an S3 problem never blocks the report.
+
+Bucket settings (Terraform, ADR-033): us-east-2 (closest to Chicago), all
+public access blocked, ACLs disabled, SSE-S3, HTTPS-only bucket policy,
+versioning with noncurrent versions expiring after 30 days. No transition to
+Standard-IA: it bills every object as at least 128 KB, and ours are a few KB.
+
+**Alternatives.**
+
+- *Ingest writes straight to S3:* S3 becomes the system of record, which is
+  closer to production. But ingest gets a storage abstraction, its tests
+  need an S3 fake, and nothing runs offline.
+- *`aws s3 sync` in a BashOperator:* fewest lines, but needs the AWS CLI in
+  the image and teaches nothing about the S3 API. It compares size and
+  modification time, not content.
+- *Upload before dbt_build:* then a network blip would block the report.
+
+**Consequences.** Two copies of the raw layer; the local one is primary and
+S3 lags by at most a day if an upload fails (the next run catches up, since
+it compares everything). Switching the ETag check to SSE-KMS or multipart
+uploads would break it: then store a checksum in object metadata instead.
+
+---
+
+## ADR-031: dbt reads local raw files by default, S3 by switch
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** With the raw layer in S3, dbt could read either copy. DuckDB
+reads `s3://` paths (httpfs) including Hive partitions and globs.
+
+**Decision.** `raw_root` defaults to `data/raw` and can be switched with
+`JOBPIPE_RAW_ROOT=s3://<bucket>/raw`. In S3 mode an `on-run-start` hook
+(`macros/s3_secret.sql`) creates a DuckDB secret with the **credential chain
+limited to environment variables**, so the key never appears in SQL, logs or
+`target/`. In local mode the hook emits nothing: no extensions, no network.
+`JOBPIPE_S3_ENDPOINT` optionally points at an S3-compatible server. The test
+suite uses that to build from a moto server and checks that the result
+matches a local build.
+
+**Alternatives.**
+
+- *Always read S3:* one source of truth, but every build lists and downloads
+  every file, needs the network, and pays for requests.
+- *Never read S3:* simplest, but the S3 copy would go untested until Athena.
+
+**Consequences.** Daily builds stay fast and offline. Staging models are
+views, so a warehouse built in S3 mode still points at `s3://`: query it
+from a connection that has the secret. `chain 'env'`, not `'env;config'`,
+because DuckDB rejects the whole secret when `~/.aws/config` has no
+`[default]` profile.
+
+---
+
+## ADR-032: The pipeline has its own least-privilege IAM user
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** Airflow runs unattended at 07:00 in Docker and needs to write
+to S3. The person running Terraform has broad admin rights; the pipeline
+needs almost none.
+
+**Decision.** Terraform creates an IAM user `jobpipe-pipeline` with one
+managed policy: `s3:ListBucket` on the data bucket limited to the `raw/`
+prefix, and `s3:GetObject` / `s3:PutObject` on `raw/*`. No delete, no other
+buckets, no IAM. **Its access key is created by hand**
+(`aws iam create-access-key`) and goes into the git-ignored `.env` (ADR-009),
+because a key created by Terraform is stored in plain text in the state.
+
+**Alternatives.**
+
+- *Mount your own SSO profile into the containers:* no long-lived key, but
+  SSO sessions expire within hours, so the 07:00 run would fail unless you'd
+  logged in that morning, and it would run with admin rights.
+- *A user that may only assume a role holding the S3 permissions:* the
+  production pattern (short-lived STS credentials), but more Terraform, and
+  it still needs a long-lived key for the user on a laptop.
+- *`aws_iam_access_key` in Terraform:* one step fewer, secret in state.
+
+**Consequences.** A long-lived key exists; its blast radius is the `raw/`
+prefix of one bucket, and versioning (ADR-030) undoes overwrites. Rotate it
+by creating a second key, updating `.env`, deleting the old one. Revisit when
+this runs on AWS compute, where an instance or task role needs no key.
+
+---
+
+## ADR-033: Terraform state in S3, created by a bootstrap stack
+
+**Status:** Accepted, 2026-11-25
+
+**Context.** Terraform records what it created in a state file. Lose it and
+Terraform no longer knows it owns the bucket and the user. The state also
+lists resource details, so it shouldn't go into git.
+
+**Decision.** Two stacks in `infra/terraform/`:
+
+- `bootstrap/` creates `jobpipe-tfstate-<account>` (versioned, SSE-S3, no
+  public access, old versions expire after 90 days, `prevent_destroy`) and
+  keeps its **own** tiny state locally (git-ignored). If that file is lost,
+  `terraform import` the bucket.
+- `main/` (data bucket, IAM) uses the **S3 backend** in that bucket with
+  **S3-native locking** (`use_lockfile = true`, Terraform 1.10+), so two
+  applies can't run at once and no DynamoDB table is needed. The bucket
+  name comes from a git-ignored `backend.hcl` that bootstrap generates,
+  because backend blocks can't use variables.
+
+Providers are pinned with `~> 6.0` and the committed `.terraform.lock.hcl`.
+
+**Alternatives.**
+
+- *Local state for everything:* simplest, but lost with the laptop, with no
+  locking or history.
+- *DynamoDB for locking:* the pre-1.10 standard, now deprecated in favor of
+  S3-native locking.
+- *HCP Terraform (Terraform Cloud):* hosted state and runs, but another
+  account to set up, and it hides the mechanics this project is meant to
+  teach.
+
+**Consequences.** Running `main` needs credentials that can read the state
+bucket. Every apply leaves a recoverable state version. Two commands come
+first on a new machine: `terraform init -backend-config=backend.hcl`.
 
 ---
 

@@ -1,0 +1,4 @@
+# Copy to backend.hcl (git-ignored), or generate it from the bootstrap stack:
+#   terraform -chdir=../bootstrap output -raw backend_hcl > backend.hcl
+bucket = "jobpipe-tfstate-<your-account-id>"
+region = "us-east-2"

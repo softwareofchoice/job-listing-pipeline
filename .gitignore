@@ -15,3 +15,11 @@ dbt/.user.yml
 # Airflow task logs (written by the containers)
 airflow/logs/*
 !airflow/logs/.gitkeep
+
+# Terraform: provider downloads, state (may hold secrets) and local backend config.
+# .terraform.lock.hcl IS committed: it pins provider versions and checksums.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/terraform/main/backend.hcl
