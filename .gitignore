@@ -11,3 +11,7 @@ dbt/logs/
 dbt/dbt_packages/
 logs/
 dbt/.user.yml
+
+# Airflow task logs (written by the containers)
+airflow/logs/*
+!airflow/logs/.gitkeep
