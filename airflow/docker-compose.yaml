@@ -119,13 +119,18 @@ services:
   # even across the two DAGs (ADR-028).
   airflow-init:
     <<: *airflow-common
-    entrypoint: /bin/bash
+    # ONE pass through /entrypoint, both commands inside it. Our uid isn't in
+    # the image's /etc/passwd, so the entrypoint adds it and exports
+    # HOME=/home/airflow (where Airflow is installed) -- but only on the first
+    # call. A second /entrypoint call in the same container skips the export,
+    # keeps HOME=/ and fails with "No module named 'airflow'".
     command:
+      - bash
       - -c
       - |
         set -e
-        /entrypoint airflow db migrate
-        /entrypoint airflow pools set jobpipe 1 "Serialize pipeline tasks that share files and the DuckDB warehouse"
+        airflow db migrate
+        airflow pools set jobpipe 1 "Serialize pipeline tasks that share files and the DuckDB warehouse"
     restart: "no"
 
 volumes:
