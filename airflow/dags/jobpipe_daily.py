@@ -1,8 +1,13 @@
-"""Daily pipeline: ingest -> dbt build -> report (ADR-028).
+"""Daily pipeline: ingest -> dbt build -> report, plus upload to S3 (ADR-028, ADR-030).
 
     ingest      fetch every active board's postings into data/raw/
+    upload_raw  copy new/changed raw files to s3://<bucket>/raw/
     dbt_build   rebuild staging, SCD2 history, features and scores; run tests
     report      write data/reports/dt=<as_of>/top_matches.{csv,html}
+
+                 ┌─> upload_raw
+        ingest ──┤
+                 └─> dbt_build ──> report
 
 Design notes:
   * No catch-up. Ingestion can only see *today's* postings, so running it
@@ -16,6 +21,11 @@ Design notes:
     test fails, no report is published from data we know is wrong: a
     "circuit breaker".
   * max_active_runs=1 and the one-slot pool: DuckDB allows a single writer.
+  * upload_raw is a side branch, not a step before dbt_build: dbt reads the
+    LOCAL raw files (ADR-031), so an S3 or network problem never blocks the
+    report. Like dbt_build it runs after a partial ingest failure
+    (all_done): whatever was fetched is worth keeping. It exits 99 ->
+    "skipped" while JOBPIPE_S3_BUCKET isn't set.
 """
 from __future__ import annotations
 
@@ -67,4 +77,17 @@ with DAG(
         append_env=True,
     )
 
+    upload_raw = BashOperator(
+        task_id="upload_raw",
+        bash_command=f"{VENV}/python -m jobpipe.upload",
+        cwd=HOME,
+        env=TASK_ENV,
+        append_env=True,
+        trigger_rule="all_done",
+        # Idempotent (only new/changed files), so a retry is always safe.
+        retries=1,
+        retry_delay=timedelta(minutes=10),
+    )
+
+    ingest >> upload_raw
     ingest >> dbt_build >> report

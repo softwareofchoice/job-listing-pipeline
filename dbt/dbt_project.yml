@@ -10,8 +10,14 @@ flags:
 # resolve the same way the Python ingest job does:
 #   .venv/bin/dbt build --project-dir dbt --profiles-dir dbt
 vars:
-  raw_root: data/raw        # ADR-011: dbt reads the raw files directly
+  # ADR-011: dbt reads the raw files directly. Local by default; set
+  # JOBPIPE_RAW_ROOT=s3://<bucket>/raw to read the S3 copy instead (ADR-031).
+  raw_root: "{{ env_var('JOBPIPE_RAW_ROOT', 'data/raw') }}"
   max_json_bytes: 67108864  # 64 MB; DuckDB default (16 MB) is too small for big boards (largest seen: ~14 MB). See ADR-021
+
+# Creates DuckDB's S3 secret, only when raw_root is s3:// (macros/s3_secret.sql).
+on-run-start:
+  - "{{ s3_secret() }}"
 
 models:
   jobpipe:

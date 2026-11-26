@@ -34,9 +34,12 @@ def test_only_the_two_dags_load(bag):
 def test_daily_order_and_failure_handling(bag):
     dag = bag.dags["jobpipe_daily"]
     t = {task.task_id: task for task in dag.tasks}
-    assert t["ingest"].downstream_task_ids == {"dbt_build"}
+    assert t["ingest"].downstream_task_ids == {"dbt_build", "upload_raw"}
     assert t["dbt_build"].downstream_task_ids == {"report"}
     assert t["dbt_build"].trigger_rule == "all_done"     # partial ingest failure still builds
+    # S3 is a side branch: its failure never blocks dbt or the report (ADR-030)
+    assert t["upload_raw"].downstream_task_ids == set()
+    assert t["upload_raw"].trigger_rule == "all_done"
     assert t["report"].trigger_rule == "all_success"     # failed data tests: no report
     assert t["ingest"].retries == 1
 

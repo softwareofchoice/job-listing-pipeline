@@ -25,10 +25,10 @@ def day(n: int) -> date:
     return date(2026, 1, n)
 
 
-def build_warehouse(tmp: Path, fetches: dict) -> duckdb.DuckDBPyConnection:
+def write_raw(raw: Path, fetches: dict) -> None:
     """fetches: {(source, company): {day_number: [posting, ...]}}.
     A day that's missing for a board means that fetch failed."""
-    store = LocalRawStore(tmp / "raw")
+    store = LocalRawStore(raw)
     for (source, company), days in fetches.items():
         for n, jobs in days.items():
             dt = day(n).isoformat()
@@ -38,13 +38,20 @@ def build_warehouse(tmp: Path, fetches: dict) -> duckdb.DuckDBPyConnection:
                          "http_status": 200, "n_postings": len(jobs), "run_id": "test",
                          "fetched_at": f"{dt}T06:00:00+00:00", "sha256": "x"})
 
-    db = tmp / "test.duckdb"
+
+def build_warehouse(tmp: Path, fetches: dict, raw_root: str | None = None,
+                    env: dict | None = None, name: str = "test") -> duckdb.DuckDBPyConnection:
+    """Write the raw layer under tmp/raw, then `dbt build` into tmp/<name>.duckdb.
+    raw_root overrides where dbt reads from (e.g. an s3:// copy of tmp/raw)."""
+    write_raw(tmp / "raw", fetches)
+    db = tmp / f"{name}.duckdb"
     result = subprocess.run(
         [str(DBT) if DBT.exists() else "dbt", "build",
          "--project-dir", "dbt", "--profiles-dir", "dbt",
-         "--target-path", str(tmp / "target"),
-         "--vars", json.dumps({"raw_root": str(tmp / "raw")})],
-        cwd=REPO, env={**os.environ, "JOBPIPE_DUCKDB_PATH": str(db), "DBT_LOG_PATH": str(tmp / "logs")},
+         "--target-path", str(tmp / f"target_{name}"),
+         "--vars", json.dumps({"raw_root": raw_root or str(tmp / "raw")})],
+        cwd=REPO, env={**os.environ, **(env or {}),
+                       "JOBPIPE_DUCKDB_PATH": str(db), "DBT_LOG_PATH": str(tmp / "logs")},
         capture_output=True, text=True)
     assert result.returncode == 0, result.stdout[-4000:]
     return duckdb.connect(str(db), read_only=True)

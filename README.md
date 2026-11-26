@@ -142,7 +142,8 @@ from mart_top_matches order by rank limit 20;
 ## Scheduling (Stage 5a: Airflow)
 
 ```
-jobpipe_daily             07:00 Chicago   ingest ──> dbt_build ──> report
+jobpipe_daily             07:00 Chicago   ingest ─┬─> dbt_build ──> report
+                                                  └─> upload_raw   (S3, Stage 5b)
 jobpipe_weekly_discovery  Mon 06:00       discover
 ```
 
@@ -169,12 +170,39 @@ docker compose -f airflow/docker-compose.yaml down      # stop (keeps run histor
 
 Run the report by hand: `PYTHONPATH=src .venv/bin/python -m jobpipe.report`.
 
+## S3 data lake (Stage 5b: S3 + Terraform)
+
+```
+data/raw/...  ──upload_raw──>  s3://jobpipe-data-<account>-<region>/raw/...   (same partitions)
+```
+
+Terraform (in `infra/terraform/`, setup steps in its
+[README](infra/terraform/README.md)) creates a private, encrypted, versioned
+bucket and a `jobpipe-pipeline` IAM user that may only list, read and write
+`raw/` (ADR-030 to ADR-033). `jobpipe.upload` copies new or changed files
+only (compared by MD5) and never deletes. Until `JOBPIPE_S3_BUCKET` is set in
+`.env`, the Airflow task shows as *skipped*.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m jobpipe.upload --dry-run   # what would be uploaded
+PYTHONPATH=src .venv/bin/python -m jobpipe.upload
+```
+
+dbt still reads the local files (fast, offline). To build from the S3 copy
+instead (ADR-031):
+
+```bash
+set -a; . ./.env; set +a
+JOBPIPE_RAW_ROOT="s3://$JOBPIPE_S3_BUCKET/raw" JOBPIPE_DUCKDB_PATH=/tmp/s3.duckdb \
+  .venv/bin/dbt build --project-dir dbt --profiles-dir dbt
+```
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
 3. ~~Feature extraction: skills, years of experience, seniority~~ (dictionary audited with an LLM: ADR-019, ADR-020)
 4. ~~Scoring against profile~~
-5. ~~5a: Airflow + Docker~~ · 5b: S3 + Terraform · 5c: Glue + Athena
+5. ~~5a: Airflow + Docker~~ · ~~5b: S3 + Terraform~~ · 5c: Glue + Athena
 
 Raw files are gzipped: inspect one with
 `zcat data/raw/source=lever/dt=2026-11-11/company=zoox/response.json.gz | head -c 500`.
