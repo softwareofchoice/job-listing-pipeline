@@ -25,6 +25,7 @@ PYTHONPATH=src .venv/bin/python -m jobpipe.discover --dry-run
 .venv/bin/dbt build --project-dir dbt --profiles-dir dbt   # from repo root
 PYTHONPATH=src .venv/bin/python -m jobpipe.report
 PYTHONPATH=src .venv/bin/python -m jobpipe.upload --dry-run
+PYTHONPATH=src .venv/bin/python -m jobpipe.export   # --write-schemas after model column changes
 terraform -chdir=infra/terraform/main plan     # setup: infra/terraform/README.md
 docker compose -f airflow/docker-compose.yaml up -d --build   # Airflow UI: localhost:8080
 ```

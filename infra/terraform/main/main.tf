@@ -1,4 +1,5 @@
-# The data lake bucket and the pipeline's own IAM user (ADR-030, ADR-032).
+# The data lake bucket and the pipeline's own IAM user (ADR-030, ADR-032,
+# ADR-037). Glue tables: glue.tf. Athena workgroup: athena.tf.
 
 variable "region" {
   description = "AWS region for the data bucket"
@@ -28,6 +29,8 @@ data "aws_caller_identity" "current" {}
 
 locals {
   raw_prefix = "raw"
+  # Prefixes the pipeline user may write: raw responses and curated Parquet.
+  pipeline_prefixes = [local.raw_prefix, local.curated_prefix]
 }
 
 # ---------------------------------------------------------------- bucket ----
@@ -85,6 +88,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
     }
   }
 
+  # Athena writes every query's result as a CSV here; they're only needed
+  # until you've read them.
+  rule {
+    id     = "expire-athena-results"
+    status = "Enabled"
+    filter {
+      prefix = "athena-results/"
+    }
+    expiration {
+      days = 7
+    }
+  }
+
   rule {
     id     = "abort-incomplete-multipart-uploads"
     status = "Enabled"
@@ -139,28 +155,32 @@ resource "aws_iam_user" "pipeline" {
   path = "/jobpipe/"
 }
 
-# Least privilege: list, read and write under raw/ in this bucket. Nothing
-# else: no delete, no other prefixes or buckets, no IAM.
+# Least privilege: list, read and write under raw/ and curated/ in this
+# bucket (ADR-032, extended by ADR-037). Nothing else: no delete, no other
+# prefixes or buckets, no Glue or Athena, no IAM.
 data "aws_iam_policy_document" "pipeline" {
   statement {
-    sid       = "ListRawPrefix"
+    sid       = "ListPipelinePrefixes"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.data.arn]
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["${local.raw_prefix}/", "${local.raw_prefix}/*"]
+      values   = flatten([for p in local.pipeline_prefixes : ["${p}/", "${p}/*"]])
     }
   }
 
   statement {
-    sid       = "ReadWriteRawObjects"
+    sid       = "ReadWritePipelineObjects"
     actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${aws_s3_bucket.data.arn}/${local.raw_prefix}/*"]
+    resources = [for p in local.pipeline_prefixes : "${aws_s3_bucket.data.arn}/${p}/*"]
   }
 }
 
 resource "aws_iam_policy" "pipeline" {
+  # Name and description kept from Stage 5b although it now covers curated/
+  # too: changing either forces a replace (detach, delete, recreate). Only the
+  # policy document below can change in place.
   name        = "jobpipe-pipeline-raw-rw"
   path        = "/jobpipe/"
   description = "jobpipe pipeline: list/read/write raw/ in the data bucket, no delete"
