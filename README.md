@@ -142,7 +142,8 @@ from mart_top_matches order by rank limit 20;
 ## Scheduling (Stage 5a: Airflow)
 
 ```
-jobpipe_daily             07:00 Chicago   ingest ─┬─> dbt_build ──> report
+jobpipe_daily             07:00 Chicago   ingest ─┬─> dbt_build ─┬─> report
+                                                  │              └─> export_curated ──> upload_curated   (Athena, 5c)
                                                   └─> upload_raw   (S3, Stage 5b)
 jobpipe_weekly_discovery  Mon 06:00       discover
 ```
@@ -197,12 +198,37 @@ JOBPIPE_RAW_ROOT="s3://$JOBPIPE_S3_BUCKET/raw" JOBPIPE_DUCKDB_PATH=/tmp/s3.duckd
   .venv/bin/dbt build --project-dir dbt --profiles-dir dbt
 ```
 
+## Athena (Stage 5c: Glue + Athena)
+
+```
+warehouse.duckdb ──export_curated──> data/curated/<table>/dt=<as_of>/data.parquet
+                 ──upload_curated──> s3://<bucket>/curated/...  <── Glue tables ── Athena SQL
+```
+
+DuckDB still does every transformation; Athena queries a daily Parquet
+snapshot of the finished tables (ADR-034): `postings_history`,
+`posting_features`, `posting_scores`, `top_matches`, each partitioned by
+`dt`. Terraform defines the Glue tables from
+`infra/terraform/main/curated_schemas.json` (ADR-035); partition projection
+means new days need no registration (ADR-036). The `jobpipe` workgroup caps
+each query at 1 GB scanned (ADR-037).
+
+```bash
+PYTHONPATH=src .venv/bin/python -m jobpipe.export        # write today's Parquet
+PYTHONPATH=src .venv/bin/python -m jobpipe.upload --root data/curated --prefix curated
+```
+
+Query in the Athena console (workgroup `jobpipe`, database `jobpipe`); see
+[docs/athena_examples.sql](docs/athena_examples.sql). If a dbt model's
+columns change, `tests/test_export.py` fails until you run
+`python -m jobpipe.export --write-schemas` and `terraform apply`.
+
 ## Roadmap
 1. ~~Ingestion~~, ~~title-based discovery~~
 2. ~~DuckDB + dbt: staging models that unify the 3 schemas, SCD2 history~~
 3. ~~Feature extraction: skills, years of experience, seniority~~ (dictionary audited with an LLM: ADR-019, ADR-020)
 4. ~~Scoring against profile~~
-5. ~~5a: Airflow + Docker~~ · ~~5b: S3 + Terraform~~ · 5c: Glue + Athena
+5. ~~5a: Airflow + Docker~~ · ~~5b: S3 + Terraform~~ · ~~5c: Glue + Athena~~
 
 Raw files are gzipped: inspect one with
 `zcat data/raw/source=lever/dt=2026-11-11/company=zoox/response.json.gz | head -c 500`.

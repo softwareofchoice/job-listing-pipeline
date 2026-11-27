@@ -1,13 +1,16 @@
-"""Daily pipeline: ingest -> dbt build -> report, plus upload to S3 (ADR-028, ADR-030).
+"""Daily pipeline: ingest -> dbt build -> report, plus S3 and Athena (ADR-028, ADR-030, ADR-034).
 
-    ingest      fetch every active board's postings into data/raw/
-    upload_raw  copy new/changed raw files to s3://<bucket>/raw/
-    dbt_build   rebuild staging, SCD2 history, features and scores; run tests
-    report      write data/reports/dt=<as_of>/top_matches.{csv,html}
+    ingest          fetch every active board's postings into data/raw/
+    upload_raw      copy new/changed raw files to s3://<bucket>/raw/
+    dbt_build       rebuild staging, SCD2 history, features and scores; run tests
+    report          write data/reports/dt=<as_of>/top_matches.{csv,html}
+    export_curated  write the finished tables as Parquet to data/curated/<table>/dt=<as_of>/
+    upload_curated  copy them to s3://<bucket>/curated/, where Athena reads them
 
                  ┌─> upload_raw
-        ingest ──┤
-                 └─> dbt_build ──> report
+        ingest ──┤                ┌─> report
+                 └─> dbt_build ───┤
+                                  └─> export_curated ──> upload_curated
 
 Design notes:
   * No catch-up. Ingestion can only see *today's* postings, so running it
@@ -26,6 +29,9 @@ Design notes:
     report. Like dbt_build it runs after a partial ingest failure
     (all_done): whatever was fetched is worth keeping. It exits 99 ->
     "skipped" while JOBPIPE_S3_BUCKET isn't set.
+  * export_curated has the same circuit breaker as report: no Athena
+    snapshot from a build whose data tests failed. It and report don't
+    depend on each other, so a broken export never hides the report.
 """
 from __future__ import annotations
 
@@ -89,5 +95,24 @@ with DAG(
         retry_delay=timedelta(minutes=10),
     )
 
+    export_curated = BashOperator(
+        task_id="export_curated",
+        bash_command=f"{VENV}/python -m jobpipe.export",
+        cwd=HOME,
+        env=TASK_ENV,
+        append_env=True,
+    )
+
+    upload_curated = BashOperator(
+        task_id="upload_curated",
+        bash_command=f"{VENV}/python -m jobpipe.upload --root data/curated --prefix curated",
+        cwd=HOME,
+        env=TASK_ENV,
+        append_env=True,
+        retries=1,
+        retry_delay=timedelta(minutes=10),
+    )
+
     ingest >> upload_raw
-    ingest >> dbt_build >> report
+    ingest >> dbt_build >> [report, export_curated]
+    export_curated >> upload_curated

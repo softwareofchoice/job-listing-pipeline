@@ -1,7 +1,8 @@
-"""Copy the local raw layer to S3 (ADR-030).
+"""Copy the local raw layer (or the curated Parquet) to S3 (ADR-030, ADR-034).
 
-    python -m jobpipe.upload             # upload new or changed files
+    python -m jobpipe.upload             # upload new or changed raw files
     python -m jobpipe.upload --dry-run   # list what would be uploaded
+    python -m jobpipe.upload --root data/curated --prefix curated   # curated Parquet
 
 Every file under data/raw/ is mirrored to s3://<bucket>/raw/ with the same
 relative path, so the Hive-style partitions (source=/dt=/company=) carry over
@@ -38,16 +39,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 log = logging.getLogger("jobpipe.upload")
 
 DEFAULT_PREFIX = "raw"
 EXIT_NOT_CONFIGURED = 99  # BashOperator's default skip_on_exit_code
 
-# The raw layer only ever holds these; *.tmp files are half-written
-# (storage._atomic_write) and must never be shipped.
-CONTENT_TYPES = {".gz": "application/gzip", ".json": "application/json"}
+# Only these are shipped. *.tmp files are half-written (storage._atomic_write,
+# export) and must never be.
+CONTENT_TYPES = {
+    ".gz": "application/gzip",
+    ".json": "application/json",
+    ".parquet": "application/vnd.apache.parquet",
+}
 
 
 @dataclass
@@ -129,14 +134,16 @@ def run(s3, bucket: str, root: Path, prefix: str = DEFAULT_PREFIX, dry_run: bool
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--raw-root", type=Path, default=Path("data/raw"))
+    p.add_argument("--root", "--raw-root", dest="root", type=Path, default=Path("data/raw"),
+                   help="local folder to mirror (default data/raw)")
     p.add_argument("--prefix", default=DEFAULT_PREFIX, help="key prefix in the bucket")
     p.add_argument("--dry-run", action="store_true", help="list what would be uploaded, upload nothing")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    # Real environment variables win over .env (override=False), as in discover.
-    load_dotenv(override=False)
+    # .env from the working directory (the repo root, also in Airflow), not
+    # from this file's folder upwards. Real environment variables win.
+    load_dotenv(find_dotenv(usecwd=True), override=False)
     bucket = os.environ.get("JOBPIPE_S3_BUCKET")
     if not bucket:
         log.warning("JOBPIPE_S3_BUCKET is not set: skipping the upload. "
@@ -145,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import boto3  # imported here so --help and the not-configured path stay fast
 
-    failed = run(boto3.client("s3"), bucket, args.raw_root, args.prefix, args.dry_run)
+    failed = run(boto3.client("s3"), bucket, args.root, args.prefix, args.dry_run)
     return 1 if failed else 0
 
 

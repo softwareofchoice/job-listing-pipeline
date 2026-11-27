@@ -45,8 +45,12 @@ Each entry follows the same format:
 | [029](#adr-029-a-dated-report-file-per-run) | A dated report file per run | Accepted | 2026-11-25 |
 | [030](#adr-030-copy-the-raw-layer-to-s3-in-a-separate-upload-task) | Copy the raw layer to S3 in a separate upload task | Accepted | 2026-11-25 |
 | [031](#adr-031-dbt-reads-local-raw-files-by-default-s3-by-switch) | dbt reads local raw files by default, S3 by switch | Accepted | 2026-11-25 |
-| [032](#adr-032-the-pipeline-has-its-own-least-privilege-iam-user) | The pipeline has its own least-privilege IAM user | Accepted | 2026-11-25 |
+| [032](#adr-032-the-pipeline-has-its-own-least-privilege-iam-user) | The pipeline has its own least-privilege IAM user | Scope extended by ADR-037 | 2026-11-25 |
 | [033](#adr-033-terraform-state-in-s3-created-by-a-bootstrap-stack) | Terraform state in S3, created by a bootstrap stack | Accepted | 2026-11-25 |
+| [034](#adr-034-athena-queries-curated-parquet-exported-from-the-dbt-warehouse) | Athena queries curated Parquet exported from the dbt warehouse | Accepted | 2026-11-27 |
+| [035](#adr-035-glue-tables-in-terraform-columns-from-a-generated-schema-file) | Glue tables in Terraform, columns from a generated schema file | Accepted | 2026-11-27 |
+| [036](#adr-036-partition-projection-for-the-dt-partitions) | Partition projection for the dt partitions | Accepted | 2026-11-27 |
+| [037](#adr-037-athena-workgroup-with-a-scan-cap-pipeline-may-also-write-curated) | Athena workgroup with a scan cap; pipeline may also write curated/ | Accepted | 2026-11-27 |
 
 Open questions are listed [at the end](#open-questions).
 
@@ -1337,7 +1341,7 @@ because DuckDB rejects the whole secret when `~/.aws/config` has no
 
 ## ADR-032: The pipeline has its own least-privilege IAM user
 
-**Status:** Accepted, 2026-11-25
+**Status:** Accepted, 2026-11-25. Scope extended to `curated/` by ADR-037.
 
 **Context.** Airflow runs unattended at 07:00 in Docker and needs to write
 to S3. The person running Terraform has broad admin rights; the pipeline
@@ -1405,6 +1409,148 @@ first on a new machine: `terraform init -backend-config=backend.hcl`.
 
 ---
 
+## ADR-034: Athena queries curated Parquet exported from the dbt warehouse
+
+**Status:** Accepted, 2026-11-27. Stage 5c.
+
+**Context.** The roadmap ends with Glue + Athena: SQL over the lake without
+a running database. The raw layer can't be read well by Athena as it stands:
+each file is one single-line JSON document of up to ~10 MB, Lever's is a
+bare array (Athena's JSON SerDe reads one *object* per line), and
+`_metadata.json` spans several lines. All the modeling already runs in
+DuckDB/dbt and is tested there.
+
+**Decision.** DuckDB keeps doing every transformation; Athena is a query
+layer over its results. A new step, `python -m jobpipe.export`, reads the
+warehouse read-only and writes one Parquet file per table and day:
+
+    data/curated/<table>/dt=<as_of>/data.parquet   ->   s3://<bucket>/curated/<table>/dt=<as_of>/
+
+| Athena table | dbt model |
+|---|---|
+| `postings_history` | `int_postings__scd2` |
+| `posting_features` | `int_posting_features` |
+| `posting_scores` | `int_posting_scores` |
+| `top_matches` | `mart_top_matches` |
+
+- **Daily snapshots**, `dt` = the scoring as-of date (latest fetch,
+  ADR-025), so you can query how scores and the top list changed over time.
+  A re-run overwrites the same day: PutObject only, no delete permission.
+- Parquet with **zstd**, rows sorted (`order by all`), so the same data gives
+  identical bytes and the upload skips unchanged files. Written to a `.tmp`
+  file and renamed, like the raw layer.
+- Upload reuses `jobpipe.upload` (ADR-030) with `--root data/curated --prefix curated`.
+- In `jobpipe_daily`: `dbt_build >> [report, export_curated]`,
+  `export_curated >> upload_curated`. The export has the report's circuit
+  breaker: no snapshot from a build whose data tests failed.
+
+**Alternatives.**
+
+- *Glue tables over the raw JSON:* nothing new to write, but awkward SQL
+  (unnest, `json_parse` for Lever), full multi-MB rows scanned per query,
+  and it repeats work dbt already does.
+- *Run dbt in Athena (dbt-athena, Iceberg):* the most cloud-native, but every
+  model must be ported from DuckDB SQL to Trino SQL, each build costs money,
+  and local development is lost. Worth revisiting if the data outgrows a laptop.
+- *Latest-only tables:* smaller, but no day-to-day history of scores.
+
+**Consequences.** About 3 MB of Parquet a day, mostly `postings_history`
+(description text); a year is about 1 GB. Each `postings_history` snapshot
+repeats the whole history, so it grows with the data: switch it to
+latest-only if that ever matters. The raw layer stays unread by Athena.
+
+---
+
+## ADR-035: Glue tables in Terraform, columns from a generated schema file
+
+**Status:** Accepted, 2026-11-27
+
+**Context.** Athena reads Parquet through Glue Data Catalog tables, which
+need explicit column names and types. Those must match what the export
+writes, which is whatever the dbt models produce.
+
+**Decision.** `aws_glue_catalog_table` resources in
+`infra/terraform/main/glue.tf`, one per curated table, in a Glue database
+`jobpipe`. Their columns come from `curated_schemas.json`, which
+`python -m jobpipe.export --write-schemas` generates from the warehouse
+(DuckDB → Glue type map; an unmapped type is an error, not a guess).
+`tests/test_export.py` builds a small warehouse with dbt and fails if the
+committed file doesn't match the models **or** the Parquet files'
+own schema. Tables are `EXTERNAL`: dropping one never deletes data.
+
+**Alternatives.**
+
+- *Glue crawler:* less code, but inferred types can be wrong, tables can
+  split unexpectedly, and each run costs DPU-hours.
+- *`CREATE EXTERNAL TABLE` SQL files run through Athena:* readable SQL,
+  but outside Terraform state, so drift goes unnoticed.
+- *Hand-written columns in HCL:* 80+ lines to keep in sync by eye.
+
+**Consequences.** Changing a model's columns is three steps: regenerate the
+file, commit it, `terraform apply`. The test says so when it's forgotten.
+
+---
+
+## ADR-036: Partition projection for the dt partitions
+
+**Status:** Accepted, 2026-11-27
+
+**Context.** Each day adds a `dt=` folder per table. Athena only reads
+partitions it knows about.
+
+**Decision.** Partition projection: each table's properties say `dt` is a
+date (`yyyy-MM-dd`, daily, from `curated_first_dt` to `NOW`) and where its
+folder is (`storage.location.template`). Athena works out the partitions at
+query time. `dt` is a `string` column, so filter with `dt = '2026-11-26'`.
+
+**Alternatives.**
+
+- *Register partitions in the DAG (`ALTER TABLE ADD PARTITION` / `MSCK
+  REPAIR TABLE`):* teaches the metastore, but it's another task that, if
+  skipped, silently hides new data. It would also need Athena and Glue
+  permissions for the pipeline user.
+- *Glue crawler on a schedule:* same, plus cost and lag.
+
+**Consequences.** Nothing to keep in sync. A projected day with no folder
+just returns no rows. Without a `dt` filter a query visits every day since
+`curated_first_dt`, which is fine at this size (the workgroup's scan cap,
+ADR-037, still applies).
+
+---
+
+## ADR-037: Athena workgroup with a scan cap; pipeline may also write curated/
+
+**Status:** Accepted, 2026-11-27. Extends ADR-032.
+
+**Context.** Athena bills per byte scanned and needs an S3 location for query
+results. The pipeline now writes a second prefix.
+
+**Decision.**
+
+- Workgroup `jobpipe` (engine v3) with **enforced** settings: results go
+  to `s3://<bucket>/athena-results/` (SSE-S3; a lifecycle rule deletes them
+  after 7 days), and a **1 GB per-query scan cutoff** (half a cent) stops a
+  runaway query. CloudWatch metrics are on.
+- The pipeline user's policy (ADR-032) now covers `curated/` as well as
+  `raw/`: list, get, put; still no delete, Glue or Athena. You query Athena
+  with your own credentials. The policy keeps its name
+  `jobpipe-pipeline-raw-rw`, because renaming would replace it.
+
+**Alternatives.**
+
+- *Default `primary` workgroup:* no setup, but no cap and results in
+  whatever location the client picks.
+- *A separate results bucket:* cleaner separation; one more bucket for no
+  benefit at this size.
+- *Give the pipeline Athena access* (e.g. a post-export smoke query): useful
+  later, but needs Athena, Glue and results-bucket permissions for a
+  long-lived key.
+
+**Consequences.** A query that needs more than 1 GB fails instead of
+billing; raise `athena_bytes_scanned_cutoff` if that's ever legitimate.
+
+---
+
 ## Open questions
 
 Decisions still to make. Each becomes an ADR once decided.
@@ -1419,3 +1565,8 @@ Decisions still to make. Each becomes an ADR once decided.
    staging or in Stage 3?
 4. **Incremental SCD2:** at what build time or data size do we switch from a
    full rebuild to merging new days (ADR-013)?
+5. **Airflow after the laptop sleeps:** on 2026-11-26 Docker Desktop came back
+   with the containers' bind mounts empty, so the DAG files and repo vanished
+   inside them and a run hung for a day until `up -d --force-recreate`. Detect
+   it (a healthcheck that the DAG file exists, an alert on runs older than N
+   hours) or recover automatically?

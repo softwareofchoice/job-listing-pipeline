@@ -5,10 +5,10 @@ Two stacks, applied in order:
 | Stack | Creates | State kept in |
 |---|---|---|
 | `bootstrap/` | `jobpipe-tfstate-<account>`: versioned, encrypted bucket for Terraform state | local `bootstrap/terraform.tfstate` (git-ignored) |
-| `main/` | `jobpipe-data-<account>-<region>` data bucket; `jobpipe-pipeline` IAM user with access to `raw/` only | the bootstrap bucket (`jobpipe/main.tfstate`) |
+| `main/` | `jobpipe-data-<account>-<region>` data bucket; `jobpipe-pipeline` IAM user with access to `raw/` and `curated/` only; Glue database `jobpipe` with the curated tables; Athena workgroup `jobpipe` | the bootstrap bucket (`jobpipe/main.tfstate`) |
 
 Why two: `main` stores its state in a bucket, and that bucket has to exist
-before `main` can run (ADR-033). Decisions: ADR-030 to ADR-033 in
+before `main` can run (ADR-033). Decisions: ADR-030 to ADR-037 in
 [docs/decisions.md](../../docs/decisions.md).
 
 Cost: a few MB in S3 Standard plus requests, well under $0.10 a month.
@@ -58,6 +58,10 @@ AWS_SECRET_ACCESS_KEY=...
 Try it: `PYTHONPATH=src .venv/bin/python -m jobpipe.upload --dry-run`.
 
 ## Day to day
+
+- A dbt model's columns changed (`tests/test_export.py` fails): run
+  `PYTHONPATH=src .venv/bin/python -m jobpipe.export --write-schemas` from the
+  repo root, commit `main/curated_schemas.json`, then `plan` and `apply`.
 
 - Change something: edit `main/*.tf`, then `terraform -chdir=main plan` and `apply`.
 - Rotate the pipeline key: `aws iam create-access-key` (a user may hold two),
